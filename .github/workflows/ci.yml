@@ -11,6 +11,8 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Check the native interface and scripts
         run: |
-          swiftc -typecheck App.swift
+          swiftc -parse-as-library -typecheck App.swift DesktopUsage.swift
+          swiftc -parse-as-library DesktopUsage.swift tests/DesktopUsageTests.swift -o "$RUNNER_TEMP/desktop-usage-tests"
+          "$RUNNER_TEMP/desktop-usage-tests"
           bash -n install.sh uninstall.sh
           python3 -m json.tool assets/translations.json >/dev/null

@@ -23,6 +23,7 @@ private struct Profile: Identifiable {
     let id: String
     let configured: Bool
     let usage: UsageSnapshot?
+    let usageError: String?
 }
 
 private struct UsageSnapshot {
@@ -51,6 +52,7 @@ private final class AccountModel: ObservableObject {
     @Published var isBusy = false
     @Published var warmups: [String: WarmupSchedule] = [:]
     @Published var warmupInfo: [String: Any] = [:]
+    @Published var desktopUsageEnabled = false
     @Published var isWarmupBusy = false
     @Published var showingWarmupSettings = false
 
@@ -116,6 +118,8 @@ private final class AccountModel: ObservableObject {
     var selectedProfile: Profile? { profiles.first(where: { $0.id == selectedID }) }
     var selectedUsage: UsageSnapshot? { selectedProfile?.usage }
     var usageUpdated: String {
+        if let profile = selectedProfile, let error = profile.usageError,
+           profile.usage == nil || profile.usage?.stale == true { return t(error) }
         guard let usage = selectedUsage else { return t("usage_missing") }
         let formatter = DateFormatter()
         formatter.dateStyle = .short
@@ -166,8 +170,10 @@ private final class AccountModel: ObservableObject {
                                       observedAt: Date(timeIntervalSince1970: observed),
                                       stale: data["stale"] as? Bool ?? true)
             }
-            return Profile(id: id, configured: entry["configured"] as? Bool ?? false, usage: usage)
+            return Profile(id: id, configured: entry["configured"] as? Bool ?? false, usage: usage,
+                           usageError: entry["usage_error"] as? String)
         }
+        desktopUsageEnabled = result["desktop_usage_enabled"] as? Bool ?? false
         let saved = result["warmup"] as? [String: [String: Any]] ?? [:]
         warmups = saved.mapValues { value in
             WarmupSchedule(enabled: value["enabled"] as? Bool ?? false,
@@ -263,6 +269,30 @@ private final class AccountModel: ObservableObject {
             guard let self = self else { return }
             if result["ok"] as? Bool == true { self.loadWarmupInfo(key); self.refresh() }
             else { self.showWarmError(result) }
+        }
+    }
+
+    func openAccountSettings() {
+        warmupInfo = [:]
+        showingWarmupSettings = true
+    }
+
+    func refreshUsage(_ key: String) {
+        if !desktopUsageEnabled {
+            let dialog = NSAlert()
+            dialog.messageText = t("usage_permission_title")
+            dialog.informativeText = t("usage_permission_body")
+            dialog.addButton(withTitle: t("usage_permission_continue"))
+            dialog.addButton(withTitle: t("cancel"))
+            guard dialog.runModal() == .alertFirstButtonReturn else { return }
+        }
+        warmCommand(["usage-refresh", key, "--allow-keychain-prompt"]) { [weak self] result in
+            guard let self = self else { return }
+            self.refresh()
+            if result["ok"] as? Bool != true { self.showWarmError(result) }
+            else if result["reason"] as? String == "recent" {
+                self.alert(title: self.t("usage_label"), message: self.t("usage_recent"))
+            }
         }
     }
 
@@ -692,6 +722,10 @@ private struct CockpitView: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(model.selectedUsage?.stale == true ? Cockpit.amber : Cockpit.muted)
                         .lineLimit(1).minimumScaleFactor(0.75)
+                    Button(model.t("usage_refresh")) { model.refreshUsage(model.selectedID) }
+                    .buttonStyle(.plain).foregroundColor(Cockpit.cyan)
+                    .font(.system(size: 10, weight: .semibold))
+                    .disabled(model.selectedID.isEmpty || model.isBusy || model.isWarmupBusy)
                 }
                 VStack(spacing: 18) {
                     UsageMetric(title: model.t("five_hour_label"), value: model.selectedUsage?.stale == true ? nil : model.selectedUsage?.fiveHour,
@@ -707,10 +741,7 @@ private struct CockpitView: View {
                     Text(model.t(warmupState))
                         .font(.system(size: 10)).foregroundColor(warmupState == "warm_last_failed" ? Cockpit.amber : Cockpit.muted)
                     Spacer()
-                    Button(model.t("warm_settings")) {
-                        model.warmupInfo = [:]
-                        model.showingWarmupSettings = true
-                    }
+                    Button(model.t("warm_settings")) { model.openAccountSettings() }
                     .buttonStyle(.plain).foregroundColor(Cockpit.cyan)
                     .font(.system(size: 11, weight: .semibold))
                     .padding(.horizontal, 10).padding(.vertical, 6)
@@ -854,8 +885,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
-let app = NSApplication.shared
-private let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-app.run()
+@main
+private struct Program {
+    static func main() {
+        if CommandLine.arguments.dropFirst().first == "--desktop-usage-probe" {
+            DesktopUsage.run()
+            return
+        }
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}

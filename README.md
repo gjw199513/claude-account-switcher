@@ -10,6 +10,10 @@ A small, unofficial macOS app to switch between Claude Desktop accounts and keep
 
 *Usage percentages in the screenshot are illustrative.*
 
+**Usage validation:** synthetic encrypted data and mocked account responses have been tested. Keychain permission and live usage with real signed-in accounts have not yet been verified.
+
+The Desktop login format was researched with reference to [claude-usage](https://github.com/gipsic/claude-usage) (MIT).
+
 ## Install
 
 Requires macOS, Claude Desktop in `/Applications`, Xcode Command Line Tools, and `/usr/bin/python3` 3.9 or later. Build locally:
@@ -22,7 +26,7 @@ cd claude-account-switcher
 
 Open **Claude Account Switcher** from `~/Applications`. The interface follows the macOS language, with English, Simplified Chinese, Japanese, Korean, Spanish, French, and German available.
 
-Use the language menu in the upper-right corner to choose a language or follow the system. The two bars show cached five-hour and weekly usage percentages from Claude Desktop or, when available, from the CLI event produced by a warm-up; they are not token counts or live readings. The sample time is shown; caches older than 30 minutes are marked and their values hidden. If attribution is ambiguous or data is unavailable, values remain blank.
+Use the language menu in the upper-right corner to choose a language or follow the system. To read plan usage, select an account and choose **Refresh**. The first read explains the access and macOS may ask for permission to use Claude Safe Storage in Keychain. It uses that account’s existing Claude Desktop login; no separate login or model request is needed. The app decrypts the Desktop access token briefly in memory and sends it only to `api.anthropic.com` over HTTPS; it does not save, log, or refresh credentials. After a successful first read, accounts are checked about every 15 minutes while macOS is logged in; manual refreshes have a five-minute cooldown. Bars show the last read five-hour and weekly percentages, not token counts. Readings older than 30 minutes or past their reported reset are hidden. An inactive account’s token may expire until the account is opened in Claude again. The Desktop credential format and usage endpoint are undocumented and can change or be rate-limited.
 
 ## Use
 
@@ -34,7 +38,7 @@ Additional accounts can be added the same way. Login expiration may still requir
 
 ## How it works and limits
 
-- Each profile has its own Claude data directory. Claude handles sign-in; the app does not export, copy, or replace login credentials. It uses no proxy and does not switch accounts based on quota.
+- Each profile has its own Claude data directory. Switching never moves or replaces credentials; usage reads use the Desktop token as described above. The app does not switch accounts based on quota.
 - Local Code transcripts remain in the shared `~/.claude/projects` directory. A background task and the switch operation reconcile account-specific sidebar index files. Claude may need a restart to reload its list.
 - Claude cloud chats, Cowork sessions, account quotas, and account-specific connectors are separate. Connectors are not copied between accounts. Desktop-specific settings are not merged.
 - SSH, WSL, custom worktrees and other special or unrecognized sessions may be skipped. Existing local scratch workspaces keep their original paths; deleting a profile directory can break sessions that use it. Multiple organization folders stop automatic sync instead of guessing.

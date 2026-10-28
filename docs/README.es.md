@@ -4,6 +4,8 @@
 
 Una aplicación no oficial y sencilla para macOS que permite cambiar entre cuentas de Claude Desktop y conservar visible la lista local de sesiones de Code. Cada cuenta inicia sesión por separado y solo se usa una ventana de Claude a la vez.
 
+**Validación de uso:** se probaron datos cifrados y respuestas simuladas. El acceso al llavero y la consulta de cuentas reales aún no se han verificado.
+
 ## Instalación
 
 Necesitas macOS, Claude Desktop en `/Applications`, Xcode Command Line Tools y `/usr/bin/python3` 3.9 o posterior.
@@ -16,7 +18,7 @@ cd claude-account-switcher
 
 Abre **Claude Account Switcher** desde `~/Applications`. La interfaz sigue el idioma del sistema: inglés, chino simplificado, japonés, coreano, español, francés o alemán.
 
-El menú superior derecho permite elegir un idioma o seguir el del sistema. Las dos barras muestran los porcentajes de uso de cinco horas y semanal guardados por Claude Desktop o por el evento del CLI durante la preparación; no son datos en tiempo real ni números de tokens. Se indica la hora de la muestra y se ocultan los valores de caché de más de 30 minutos. Si faltan datos o no se puede atribuirlos con seguridad, se dejan en blanco.
+El menú superior derecho permite elegir un idioma o seguir el del sistema. Para consultar el uso, selecciona la cuenta y pulsa **Actualizar**. La primera vez se explica el acceso y macOS puede pedir permiso para Claude Safe Storage en el llavero. Se usa la sesión existente de Claude Desktop, sin otro inicio de sesión ni mensajes al modelo. El token se descifra temporalmente en memoria y solo se envía por HTTPS a `api.anthropic.com`; no se guarda, registra ni renueva. Tras la primera lectura correcta se consulta cada 15 minutos aproximadamente durante la sesión de macOS; la actualización manual espera cinco minutos. Se ocultan lecturas de más de 30 minutos o posteriores al reinicio. La sesión de una cuenta inactiva puede caducar hasta abrirla en Claude. El formato y la API no son públicos y pueden cambiar o limitar las consultas.
 
 ## Uso
 
@@ -28,7 +30,7 @@ Añade más cuentas del mismo modo. Si una sesión caduca, puede ser necesario v
 
 ## Funcionamiento y límites
 
-- Cada cuenta utiliza una carpeta de datos independiente. Claude gestiona el inicio de sesión; la herramienta no exporta ni copia las credenciales. No usa un proxy ni cambia de cuenta según la cuota.
+- Cada cuenta utiliza una carpeta independiente. Al cambiar no se mueven ni sustituyen credenciales; la consulta de uso emplea el token de Desktop como se explica arriba. No hay cambio automático según la cuota.
 - Las transcripciones locales de Code comparten `~/.claude/projects`. Una tarea en segundo plano y el cambio de cuenta concilian los índices de la barra lateral. Claude puede necesitar un reinicio para volver a leer la lista.
 - Los chats en la nube, Cowork, las cuotas, los conectores de cada cuenta y los ajustes propios de Desktop permanecen separados.
 - Las sesiones SSH, WSL, worktrees personalizados u otras sesiones especiales o desconocidas pueden omitirse. Los espacios temporales conservan su ruta original; eliminar la carpeta de su perfil puede impedir abrir esas sesiones. Si hay varias carpetas de organización, la sincronización se detiene sin adivinar.

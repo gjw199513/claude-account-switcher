@@ -4,6 +4,8 @@
 
 Eine kleine inoffizielle macOS-App zum Wechseln zwischen Claude-Desktop-Konten, während lokale Code-Sitzungen sichtbar bleiben. Jedes Konto wird getrennt angemeldet; gleichzeitig läuft nur ein Claude-Fenster.
 
+**Prüfstand der Nutzungsanzeige:** Synthetische verschlüsselte Daten und simulierte Antworten wurden getestet. Schlüsselbundzugriff und Online-Abruf mit echten Konten sind noch nicht geprüft.
+
 ## Installation
 
 Benötigt werden macOS, Claude Desktop in `/Applications`, Xcode Command Line Tools und `/usr/bin/python3` ab Version 3.9.
@@ -16,7 +18,7 @@ cd claude-account-switcher
 
 Öffne **Claude Account Switcher** aus `~/Applications`. Die Oberfläche folgt der Systemsprache und unterstützt Englisch, vereinfachtes Chinesisch, Japanisch, Koreanisch, Spanisch, Französisch und Deutsch.
 
-Im Menü oben rechts lässt sich eine Sprache wählen oder die Systemsprache verwenden. Die beiden Balken zeigen den von Claude Desktop oder dem CLI-Ereignis bei der Vorbereitung gespeicherten Fünf-Stunden- und Wochenverbrauch; es sind weder Livewerte noch Tokenzahlen. Der Zeitpunkt wird angezeigt; Cachewerte, die älter als 30 Minuten sind, werden ausgeblendet. Fehlen Daten oder ist ihre Zuordnung unklar, bleiben die Werte leer.
+Im Menü oben rechts lässt sich eine Sprache wählen oder die Systemsprache verwenden. Für die Nutzung ein Konto auswählen und **Aktualisieren** klicken. Der erste Zugriff wird erklärt; macOS kann Zugriff auf Claude Safe Storage im Schlüsselbund verlangen. Die vorhandene Claude-Desktop-Anmeldung wird verwendet, ohne erneute Anmeldung oder Modellnachricht. Das Zugriffstoken wird kurz im Speicher entschlüsselt und nur per HTTPS an `api.anthropic.com` gesendet; es wird nicht gespeichert, protokolliert oder erneuert. Nach dem ersten erfolgreichen Abruf wird während der macOS-Sitzung etwa alle 15 Minuten aktualisiert; manuell frühestens alle fünf Minuten. Werte über 30 Minuten oder nach dem Rücksetzen werden ausgeblendet. Eine inaktive Anmeldung kann ablaufen, bis das Konto in Claude geöffnet wird. Das Speicherformat und die API sind nicht öffentlich und können sich ändern oder Abfragen begrenzen.
 
 ## Verwendung
 
@@ -28,7 +30,7 @@ Weitere Konten werden genauso hinzugefügt. Läuft eine Anmeldung ab, kann eine 
 
 ## Funktionsweise und Grenzen
 
-- Jedes Konto verwendet einen eigenen Claude-Datenordner. Claude übernimmt die Anmeldung; das Tool exportiert oder kopiert keine Anmeldedaten. Es nutzt keinen Proxy und wechselt nicht automatisch nach Kontingent.
+- Jedes Konto verwendet einen eigenen Claude-Datenordner. Beim Wechsel werden Anmeldedaten weder verschoben noch ersetzt; der Nutzungsabruf verwendet das Desktop-Token wie oben beschrieben. Ein automatischer Wechsel nach Kontingent erfolgt nicht.
 - Lokale Code-Verläufe teilen sich `~/.claude/projects`. Ein Hintergrunddienst und der Kontowechsel gleichen die kontoabhängigen Seitenleistenindizes ab. Zum erneuten Laden kann ein Claude-Neustart nötig sein.
 - Cloud-Chats, Cowork, Kontingente, kontospezifische Konnektoren und Desktop-spezifische Einstellungen bleiben getrennt.
 - SSH-, WSL-, benutzerdefinierte Worktree- und andere besondere oder unbekannte Sitzungen können übersprungen werden. Vorhandene temporäre Arbeitsbereiche behalten ihren ursprünglichen Pfad; das Löschen des zugehörigen Profilordners kann sie unbrauchbar machen. Bei mehreren Organisationsordnern wird die Synchronisierung vorsichtshalber angehalten.

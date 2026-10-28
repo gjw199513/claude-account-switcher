@@ -10,7 +10,7 @@ command -v swiftc >/dev/null || { printf '%s\n' 'Xcode Command Line Tools are re
 mkdir -p "$SUPPORT" "$HOME/Applications" "$(dirname "$AGENT")" "$STAGED/Contents/MacOS" "$STAGED/Contents/Resources"
 chmod 700 "$SUPPORT"
 trap 'rm -rf "$STAGED"' EXIT
-swiftc -O "$HERE/App.swift" -o "$STAGED/Contents/MacOS/LocalClaudeAccounts"
+swiftc -parse-as-library -O "$HERE/App.swift" "$HERE/DesktopUsage.swift" -o "$STAGED/Contents/MacOS/LocalClaudeAccounts"
 cp "$HERE/assets/AppIcon.icns" "$STAGED/Contents/Resources/AppIcon.icns"
 cp "$HERE/assets/translations.json" "$STAGED/Contents/Resources/translations.json"
 cat > "$STAGED/Contents/Info.plist" <<'PLIST'
@@ -20,8 +20,8 @@ cat > "$STAGED/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>Claude Account Switcher</string>
 <key>CFBundleDisplayName</key><string>Claude Account Switcher</string>
 <key>CFBundleIdentifier</key><string>local.claude.account-switcher</string>
-<key>CFBundleVersion</key><string>4</string>
-<key>CFBundleShortVersionString</key><string>0.4.0</string>
+<key>CFBundleVersion</key><string>5</string>
+<key>CFBundleShortVersionString</key><string>0.4.1</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleExecutable</key><string>LocalClaudeAccounts</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>

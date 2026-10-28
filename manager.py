@@ -2,7 +2,8 @@
 """Local Claude Desktop profiles and conservative Code-session reconciliation.
 
 This uses macOS, Python's standard library, and the existing Claude installation.
-It never extracts, saves, moves or copies browser cookies or OAuth tokens.
+Session reconciliation never moves credentials. The optional Desktop usage
+probe separately uses a token in memory with explicit Keychain authorization.
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ APP_BIN = str(APP / 'Contents/MacOS/Claude')
 SUPPORT = HOME / 'Library/Application Support'
 DATA = {'a': SUPPORT / 'Claude', 'b': SUPPORT / 'Claude Local B'}
 STATE = SUPPORT / 'Local Claude Accounts'
+USAGE_PROBE = HOME / 'Applications/Claude Account Switcher.app/Contents/MacOS/LocalClaudeAccounts'
 MAX_RECORD = 8 * 1024 * 1024
 UUID = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 FILENAME = re.compile(r'^local_(' + UUID + r')\.json$')
@@ -770,15 +772,7 @@ def parse_warmup_stream(stdout: str, now: float | None = None) -> tuple[dict[str
     return observation, success
 
 
-def read_warmup_usage(key: str, profile: Path, session_folder: Path | None,
-                      now: float | None = None) -> dict[str, Any] | None:
-    if session_folder is None:
-        return None
-    account = account_id(profile)
-    record = warmup_profile(warmup_config(), key)
-    if account is None or record.get('profile') != profile_fingerprint(account, session_folder.name):
-        return None
-    usage = record.get('usage')
+def saved_usage(usage: Any, now: float | None = None) -> dict[str, Any] | None:
     if not isinstance(usage, dict):
         return None
     observed = usage.get('observed_at')
@@ -804,9 +798,210 @@ def read_warmup_usage(key: str, profile: Path, session_folder: Path | None,
                 values[name] = value if math.isfinite(value) and 0 <= value <= 100 else None
             except OverflowError:
                 values[name] = None
+        reset = usage.get(name + '_reset_at')
+        if isinstance(reset, (int, float)) and not isinstance(reset, bool):
+            try:
+                if math.isfinite(float(reset)) and current >= float(reset):
+                    values[name] = None
+            except OverflowError:
+                values[name] = None
     if all(value is None for value in values.values()):
         return None
     return {**values, 'observed_at': observed, 'stale': current - observed > 30 * 60}
+
+
+def read_warmup_usage(key: str, profile: Path, session_folder: Path | None,
+                      now: float | None = None) -> dict[str, Any] | None:
+    if session_folder is None:
+        return None
+    account = account_id(profile)
+    record = warmup_profile(warmup_config(), key)
+    if account is None or record.get('profile') != profile_fingerprint(account, session_folder.name):
+        return None
+    return saved_usage(record.get('usage'), now)
+
+
+def usage_config() -> dict[str, Any]:
+    data = load_state('usage-state.json')
+    if data.get('version') != 1 or not isinstance(data.get('profiles'), dict):
+        return {'version': 1, 'enabled': False, 'profiles': {}}
+    return {'version': 1, 'enabled': data.get('enabled') is True, 'profiles': data['profiles']}
+
+
+def usage_profile(data: dict[str, Any], key: str) -> dict[str, Any]:
+    value = data['profiles'].get(key)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+@contextlib.contextmanager
+def usage_locked() -> Iterator[None]:
+    private_dir(STATE)
+    fd = os.open(STATE / 'usage.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise Problem('用量正在刷新，请稍后再试。') from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def usage_failure(code: str) -> Problem:
+    return Problem({
+        'usage_keychain': '无法访问 Claude 钥匙串，请允许访问后重试。',
+        'usage_storage': '无法读取 Claude 的本机登录信息。',
+        'usage_expired': '该账号的登录不可用或已过期，请在 Claude 中打开该账号后重试。',
+        'usage_limited': 'Claude 限制了用量查询，请稍后再试。',
+    }.get(code, '用量暂时不可用，请稍后再试。'))
+
+
+def refresh_usage(key: str, allow_prompt: bool = False, now: float | None = None) -> dict[str, Any]:
+    """Read an already-signed-in Desktop profile; never copy or persist its credentials."""
+    if key not in DATA:
+        raise Problem('未知账号。')
+    current = time.time() if now is None else now
+    with usage_locked():
+        data = usage_config()
+        if not data['enabled'] and not allow_prompt:
+            return {'refreshed': False, 'reason': 'disabled'}
+        profile = DATA[key]
+        folder = session_dir(profile)
+        account = account_id(profile)
+        if folder is None or account is None:
+            raise Problem('请先在 Claude Desktop 中登录并打开该账号的 Code。')
+        fingerprint = profile_fingerprint(account, folder.name)
+        record: dict[str, Any] = usage_profile(data, key)
+        if record.get('profile') != fingerprint:
+            record = {'profile': fingerprint}
+        retry_at = record.get('retry_at')
+        if isinstance(retry_at, (int, float)) and not isinstance(retry_at, bool) and current < retry_at:
+            if record.get('last_error'):
+                raise usage_failure(str(record['last_error']))
+            return {'refreshed': False, 'reason': 'recent'}
+        record.update({'profile': fingerprint, 'attempt_at': current})
+        data['profiles'][key] = record
+        save_state('usage-state.json', data)
+        failure = 'usage_unavailable'
+        retry = 900
+        try:
+            command = [str(USAGE_PROBE), '--desktop-usage-probe']
+            payload = {'profile': str(profile), 'account': account, 'organization': folder.name,
+                       'allow_prompt': allow_prompt}
+            try:
+                completed = subprocess.run(command, input=json.dumps(payload), capture_output=True, text=True,
+                                           timeout=35, check=False)
+                result = json.loads(completed.stdout)
+            except (OSError, subprocess.SubprocessError, ValueError):
+                raise usage_failure(failure)
+            if not isinstance(result, dict) or completed.returncode != 0 or result.get('ok') is not True:
+                if isinstance(result, dict):
+                    reported = result.get('error_code')
+                    if isinstance(reported, str) and reported in {
+                            'usage_keychain', 'usage_storage', 'usage_expired', 'usage_limited'}:
+                        failure = reported
+                    seconds = result.get('retry_seconds')
+                    if type(seconds) is int:
+                        retry = min(max(seconds, 900), 86400)
+                if failure in ('usage_keychain', 'usage_storage', 'usage_expired'):
+                    retry = 30 if allow_prompt else 900
+                raise usage_failure(failure)
+            observation = result.get('usage')
+            normalized = saved_usage(observation, current)
+            if not isinstance(observation, dict) or normalized is None:
+                raise usage_failure(failure)
+            # The Desktop profile must still be the same after the network request.
+            after_account, after_folder = account_id(profile), session_dir(profile)
+            if after_account is None or after_folder is None or profile_fingerprint(after_account, after_folder.name) != fingerprint:
+                failure = 'usage_expired'
+                raise usage_failure(failure)
+            clean: dict[str, Any] = {'observed_at': current}
+            for name in ('five_hour', 'seven_day', 'five_hour_reset_at', 'seven_day_reset_at'):
+                value = observation.get(name) if name.endswith('_reset_at') else normalized.get(name)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    try:
+                        numeric = float(value)
+                        if math.isfinite(numeric) and (0 <= numeric <= 100 if not name.endswith('_reset_at') else current < numeric < current + 366 * 86400):
+                            clean[name] = numeric
+                    except OverflowError:
+                        pass
+            if 'five_hour' not in clean and 'seven_day' not in clean:
+                raise usage_failure(failure)
+            record.update({'usage': clean, 'retry_at': current + 300, 'last_error': None, 'failures': 0})
+            data['enabled'] = True
+            data['profiles'][key] = record
+            save_state('usage-state.json', data)
+            return {'refreshed': True}
+        except Problem:
+            count = record.get('failures', 0)
+            count = count + 1 if type(count) is int and 0 <= count < 10 else 1
+            if failure == 'usage_limited':
+                retry = max(retry, min(900 * 2 ** (count - 1), 7200))
+            record.update({'last_error': failure, 'retry_at': current + retry, 'failures': count})
+            data['profiles'][key] = record
+            save_state('usage-state.json', data)
+            raise
+
+
+def read_desktop_usage(key: str, profile: Path, folder: Path | None,
+                       now: float | None = None) -> dict[str, Any] | None:
+    if folder is None:
+        return None
+    account = account_id(profile)
+    record = usage_profile(usage_config(), key)
+    if account is None or record.get('profile') != profile_fingerprint(account, folder.name):
+        return None
+    return saved_usage(record.get('usage'), now)
+
+
+def usage_due(record: dict[str, Any], now: float) -> bool:
+    attempt = record.get('attempt_at')
+    retry_at = record.get('retry_at')
+    if isinstance(retry_at, (int, float)) and not isinstance(retry_at, bool) and now < retry_at:
+        return False
+    return (not isinstance(attempt, (int, float)) or isinstance(attempt, bool) or
+            now < attempt or now - attempt >= 900)
+
+
+def usage_needs_check(key: str, data: dict[str, Any], now: float) -> bool:
+    try:
+        folder = session_dir(DATA[key])
+        account = account_id(DATA[key])
+    except (Problem, OSError):
+        return False
+    if folder is None or account is None:
+        return False
+    record = usage_profile(data, key)
+    return record.get('profile') != profile_fingerprint(account, folder.name) or usage_due(record, now)
+
+
+def usage_tick(now: float | None = None) -> None:
+    current = time.time() if now is None else now
+    data = usage_config()
+    if not data['enabled']:
+        return
+    for key in DATA:
+        if not usage_needs_check(key, data, current):
+            continue
+        try:
+            refresh_usage(key, allow_prompt=False, now=current)
+        except (Problem, OSError, subprocess.SubprocessError):
+            pass
+        return
+
+
+def schedule_usage_tick() -> None:
+    data = usage_config()
+    if not data['enabled']:
+        return
+    now = time.time()
+    if any(usage_needs_check(key, data, now) for key in DATA):
+        try:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'usage-background'],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError:
+            pass
 
 
 def warmup_dismiss(key: str, now: datetime.datetime | None = None) -> dict[str, Any]:
@@ -935,14 +1130,22 @@ def status() -> dict[str, Any]:
     if len(ids) != len(set(ids)):
         problem = '多个窗口使用了同一个 Claude 账号，请登录不同账号。'
     profiles = []
+    usage_state = usage_config()
     for key, root in DATA.items():
-        observations = [read_usage(root, found_paths[key]), read_warmup_usage(key, root, found_paths[key])]
+        observations = [read_usage(root, found_paths[key]), read_warmup_usage(key, root, found_paths[key]),
+                        read_desktop_usage(key, root, found_paths[key])]
         usable = [item for item in observations if item is not None]
+        folder = found_paths[key]
+        account = account_id(root) if folder is not None else None
+        entry = usage_profile(usage_state, key)
+        error = entry.get('last_error') if folder is not None and account is not None and entry.get('profile') == profile_fingerprint(account, folder.name) else None
         profiles.append({'id': key, 'configured': folders[key], 'active': key in active.values(),
-                         'usage': max(usable, key=lambda item: item['observed_at']) if usable else None})
+                         'usage': max(usable, key=lambda item: item['observed_at']) if usable else None,
+                         'usage_error': error})
     return {'active': next(iter(active.values())) if len(active) == 1 else ('none' if not active else 'many'),
             'busy': busy, 'profiles': profiles, 'configured': folders,
             'warmup': warmup_public(),
+            'desktop_usage_enabled': usage_state['enabled'],
             'last': load_state('sync-state.json').get('last', {}),
             'problem': problem, 'problem_code': error_code(problem) if problem else None}
 
@@ -1009,6 +1212,18 @@ def switch(target: str, allow_quit: bool) -> dict[str, Any]:
 
 
 def error_code(message: str) -> str:
+    if '用量正在刷新' in message:
+        return 'usage_error_busy'
+    if '钥匙串' in message:
+        return 'usage_keychain'
+    if '本机登录信息' in message:
+        return 'usage_storage'
+    if '登录不可用或已过期' in message:
+        return 'usage_expired'
+    if '限制了用量查询' in message:
+        return 'usage_limited'
+    if '用量暂时不可用' in message:
+        return 'usage_unavailable'
     if '预热需要安装' in message:
         return 'warm_error_cli_missing'
     if '登录该账号的 Claude Code CLI' in message:
@@ -1044,9 +1259,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('command', choices=['status', 'background', 'switch', 'add', 'warmup-info',
                                             'warmup-login', 'warmup-bind', 'warmup-save',
-                                            'warmup-run', 'warmup-dismiss'])
+                                            'warmup-run', 'warmup-dismiss', 'usage-refresh', 'usage-background'])
     parser.add_argument('target', nargs='?')
     parser.add_argument('--allow-quit', action='store_true')
+    parser.add_argument('--allow-keychain-prompt', action='store_true')
     parser.add_argument('--enabled', choices=['yes', 'no'], default='no')
     parser.add_argument('--hour', type=int, default=9)
     parser.add_argument('--minute', type=int, default=0)
@@ -1059,7 +1275,15 @@ def main() -> int:
             try:
                 output = background()
             finally:
-                warmup_tick()
+                try:
+                    warmup_tick()
+                finally:
+                    schedule_usage_tick()
+        elif args.command == 'usage-background':
+            usage_tick()
+            output = {}
+        elif args.command == 'usage-refresh' and args.target:
+            output = refresh_usage(args.target, allow_prompt=args.allow_keychain_prompt)
         elif args.command == 'add':
             output = add_profile()
         elif args.command == 'switch' and args.target:

@@ -120,6 +120,89 @@ class ReconciliationTests(unittest.TestCase):
         (m.DATA['a'] / 'claude-code-sessions' / ACCOUNT_B / ORG_A).mkdir(parents=True)
         self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
 
+    def test_existing_desktop_signin_can_refresh_without_a_cli_login(self):
+        fake = Path(self.tmp.name) / 'fake-usage-probe'
+        fake.write_text('''#!/usr/bin/python3
+import json, sys
+assert sys.argv[1:] == ['--desktop-usage-probe']
+request = json.loads(sys.stdin.read())
+assert request['account'] == ''' + repr(ACCOUNT_A) + ''' and request['organization'] == ''' + repr(ORG_A) + '''
+assert request['allow_prompt'] is True
+print(json.dumps({'ok':True, 'usage':{'observed_at':1800000000, 'five_hour':42,
+  'seven_day':19, 'five_hour_reset_at':1800003600, 'not_for_storage':'DO-NOT-STORE'}}))
+''')
+        fake.chmod(0o700)
+        with mock.patch.object(m, 'USAGE_PROBE', fake), mock.patch.object(m, 'warmup_identity') as cli:
+            self.assertFalse(m.refresh_usage('a', now=1_800_000_000)['refreshed'])
+            self.assertTrue(m.refresh_usage('a', allow_prompt=True, now=1_800_000_000)['refreshed'])
+            self.assertFalse(m.refresh_usage('a', allow_prompt=True, now=1_800_000_010)['refreshed'])
+            cli.assert_not_called()
+        result = m.read_desktop_usage('a', m.DATA['a'], self.a, now=1_800_000_001)
+        self.assertEqual((result['five_hour'], result['seven_day']), (42, 19))
+        self.assertIsNone(m.read_desktop_usage('b', m.DATA['b'], self.b, now=1_800_000_001))
+        self.assertTrue(m.usage_config()['enabled'])
+        self.assertNotIn('DO-NOT-STORE', (m.STATE / 'usage-state.json').read_text())
+        self.assertFalse(m.warmup_public()['a']['enabled'])
+
+    def test_denied_keychain_access_does_not_enable_automatic_usage_checks(self):
+        response = json.dumps({'ok':False, 'error_code':'usage_keychain'})
+        with mock.patch.object(m.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout=response)) as run:
+            with self.assertRaises(m.Problem):
+                m.refresh_usage('a', allow_prompt=True, now=1000)
+            self.assertFalse(m.usage_config()['enabled'])
+            m.usage_tick(now=2000)
+            self.assertEqual(run.call_count, 1)
+
+    def test_usage_rate_limit_is_backed_off_and_does_not_reveal_response(self):
+        response = json.dumps({'ok':False, 'error_code':'usage_limited', 'retry_seconds':0,
+                               'private':'DO-NOT-STORE'})
+        with mock.patch.object(m.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout=response)) as run:
+            with self.assertRaises(m.Problem):
+                m.refresh_usage('a', allow_prompt=True, now=1000)
+            with self.assertRaises(m.Problem):
+                m.refresh_usage('a', allow_prompt=True, now=1001)
+            self.assertEqual(run.call_count, 1)
+            with self.assertRaises(m.Problem):
+                m.refresh_usage('a', allow_prompt=True, now=1900)
+        record = m.usage_config()['profiles']['a']
+        self.assertEqual(record['retry_at'], 3700)
+        self.assertNotIn('DO-NOT-STORE', (m.STATE / 'usage-state.json').read_text())
+
+    def test_usage_result_is_discarded_if_desktop_account_changes(self):
+        response = json.dumps({'ok':True, 'usage':{'observed_at':1000, 'five_hour':42}})
+        with mock.patch.object(m, 'session_dir', side_effect=[self.a, self.b]), \
+             mock.patch.object(m.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout=response)):
+            with self.assertRaises(m.Problem):
+                m.refresh_usage('a', allow_prompt=True, now=1000)
+        self.assertFalse(m.usage_config()['enabled'])
+        self.assertNotIn('usage', m.usage_config()['profiles']['a'])
+
+    def test_usage_poll_runs_one_due_profile_without_a_keychain_prompt(self):
+        m.save_state('usage-state.json', {'version':1, 'enabled':True, 'profiles':{
+            'a':{'profile':m.profile_fingerprint(ACCOUNT_A, ORG_A), 'attempt_at':1000, 'retry_at':1300},
+            'b':{'profile':m.profile_fingerprint(ACCOUNT_B, ORG_B), 'attempt_at':1000, 'retry_at':1300}}})
+        with mock.patch.object(m, 'refresh_usage') as refresh:
+            m.usage_tick(now=1899)
+            refresh.assert_not_called()
+            m.usage_tick(now=1900)
+            refresh.assert_called_once_with('a', allow_prompt=False, now=1900)
+
+    def test_saved_usage_hides_windows_after_their_reset(self):
+        usage = {'observed_at':1000, 'five_hour':80, 'seven_day':20,
+                 'five_hour_reset_at':1100, 'seven_day_reset_at':2000}
+        result = m.saved_usage(usage, now=1101)
+        self.assertIsNone(result['five_hour'])
+        self.assertEqual(result['seven_day'], 20)
+
+    def test_refresh_does_not_restore_an_expired_window_when_another_is_valid(self):
+        payload = {'ok':True, 'usage':{'observed_at':1000, 'five_hour':80, 'seven_day':20,
+                                       'five_hour_reset_at':999, 'seven_day_reset_at':2000}}
+        with mock.patch.object(m.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout=json.dumps(payload))):
+            m.refresh_usage('a', allow_prompt=True, now=1000)
+        result = m.read_desktop_usage('a', m.DATA['a'], self.a, now=1001)
+        self.assertIsNone(result['five_hour'])
+        self.assertEqual(result['seven_day'], 20)
+
     def test_warmup_sends_only_once_at_scheduled_time_and_is_isolated(self):
         now = datetime.datetime(2026, 10, 28, 9, 0, 10)
         calls = []
