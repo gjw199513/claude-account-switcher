@@ -16,6 +16,8 @@ cd claude-account-switcher
 
 Ouvrez **Claude Account Switcher** depuis `~/Applications`. L’interface suit la langue du système : anglais, chinois simplifié, japonais, coréen, espagnol, français ou allemand.
 
+Le menu en haut à droite permet de choisir une langue ou de suivre celle du système. Les deux barres affichent les pourcentages sur cinq heures et sur une semaine enregistrés par Claude pour le compte sélectionné ; ce ne sont ni des valeurs en temps réel ni des nombres de tokens. L’heure de la mesure et les caches anciens sont indiqués. Sans données ou si leur attribution est incertaine, les valeurs restent vides.
+
 ## Utilisation
 
 1. Le profil Claude actuel est le **compte A**. Cliquez sur **Ajouter un compte**, confirmez, connectez-vous dans la nouvelle fenêtre Claude et ouvrez **Code**.
@@ -33,6 +35,10 @@ Ajoutez d’autres comptes de la même façon. Une connexion expirée peut néce
 - Les enregistrements en conflit ou invalides sont conservés et les index sont sauvegardés avant remplacement. Les suppressions ne sont pas propagées. Le format interne de Claude Desktop n’est pas documenté et peut changer après une mise à jour.
 
 **Validation :** sur le Mac actuel, le compte B a affiché la barre latérale Code locale du compte A. La synchronisation de plusieurs comptes et les protections ont été testées avec des données simulées ; la reprise de conversations réelles et les autres versions de Claude ne sont pas encore entièrement validées.
+
+## Facultatif : tâche planifiée officielle
+
+Cette application n’automatise pas le préchauffage. Pour chaque compte Claude payant, vous pouvez configurer une [tâche planifiée officielle Cowork](https://support.claude.com/en/articles/13854387-schedule-recurring-tasks-in-claude-cowork), avec une instruction courte et un horaire, puis choisir Haiku si disponible. Les tâches dans le cloud peuvent fonctionner lorsque l’application est fermée. Elles consomment du quota et peuvent entraîner des frais de crédits supplémentaires. Rien ne garantit qu’une courte requête démarre une nouvelle fenêtre de cinq heures.
 
 ## Désinstallation
 

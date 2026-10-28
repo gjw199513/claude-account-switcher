@@ -16,6 +16,8 @@ cd claude-account-switcher
 
 Öffne **Claude Account Switcher** aus `~/Applications`. Die Oberfläche folgt der Systemsprache und unterstützt Englisch, vereinfachtes Chinesisch, Japanisch, Koreanisch, Spanisch, Französisch und Deutsch.
 
+Im Menü oben rechts lässt sich eine Sprache wählen oder die Systemsprache verwenden. Die beiden Balken zeigen den von Claude gespeicherten Fünf-Stunden- und Wochenverbrauch des ausgewählten Kontos; es sind weder Livewerte noch Tokenzahlen. Zeitpunkt und veralteter Cache werden gekennzeichnet. Fehlen Daten oder ist ihre Zuordnung unklar, bleiben die Werte leer.
+
 ## Verwendung
 
 1. Das aktuelle Claude-Profil ist **Konto A**. Klicke auf **Konto hinzufügen**, bestätige den Wechsel, melde dich im neuen Claude-Fenster an und öffne **Code**.
@@ -33,6 +35,10 @@ Weitere Konten werden genauso hinzugefügt. Läuft eine Anmeldung ab, kann eine 
 - Konflikte und fehlerhafte Einträge bleiben erhalten; vor dem Überschreiben werden Indizes gesichert. Löschungen werden nicht übertragen. Das interne Speicherformat von Claude Desktop ist nicht dokumentiert und kann sich nach Updates ändern.
 
 **Validierung:** Auf dem aktuellen Mac wurde bestätigt, dass Konto B die lokale Code-Seitenleiste von A anzeigt. Der Abgleich mehrerer Konten und Schutzmechanismen wurden mit Testdaten geprüft; das Fortsetzen realer Gespräche und andere Claude-Versionen sind noch nicht vollständig validiert.
+
+## Optional: offizielle geplante Aufgabe
+
+Diese App automatisiert kein Aufwärmen. Für jedes bezahlte Claude-Konto kann eine [offizielle geplante Cowork-Aufgabe](https://support.claude.com/en/articles/13854387-schedule-recurring-tasks-in-claude-cowork) mit einem kurzen Auftrag und Zeitplan eingerichtet werden; Haiku kann gewählt werden, falls verfügbar. Cloud-Aufgaben laufen auch bei geschlossener App. Sie verbrauchen Kontingent und können zusätzliche Nutzungskosten verursachen. Es ist nicht garantiert, dass eine kurze Anfrage ein neues Fünf-Stunden-Fenster startet.
 
 ## Deinstallation
 

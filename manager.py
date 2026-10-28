@@ -11,6 +11,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -492,6 +493,67 @@ def sync(source_key: str | None, both_stopped: bool = False) -> dict[str, Any]:
     return result
 
 
+def read_usage(profile: Path, session_folder: Path | None, now: float | None = None) -> dict[str, Any] | None:
+    """Read the latest Desktop sample for this profile's unambiguous organization.
+
+    These are cached utilization percentages, not a live API response or token counts.
+    A missing, invalid or ambiguous observation must remain unknown.
+    """
+    if session_folder is None:
+        return None
+    # Samples identify an organization, not a person. If a profile has been used
+    # by multiple accounts, an old sample cannot be attributed confidently.
+    root = profile / 'claude-code-sessions'
+    try:
+        accounts = [p for p in root.iterdir() if p.is_dir() and not p.is_symlink()
+                    and UUID_ONLY.fullmatch(p.name)]
+    except OSError:
+        return None
+    if len(accounts) != 1 or accounts[0] != session_folder.parent:
+        return None
+    try:
+        data = json.loads(read_regular(profile / 'plan-usage-history.json'))
+    except (OSError, ValueError, Problem):
+        return None
+    if (not isinstance(data, dict) or type(data.get('version')) is not int
+            or data['version'] not in (1, 2) or not isinstance(data.get('samples'), list)):
+        return None
+    current_time = time.time() if now is None else now
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for sample in data['samples']:
+        if not isinstance(sample, dict) or sample.get('org') != session_folder.name:
+            continue
+        stamp, utilization = sample.get('t'), sample.get('u')
+        if isinstance(stamp, bool) or not isinstance(stamp, (int, float)) or not isinstance(utilization, dict):
+            continue
+        try:
+            observed = float(stamp) / 1000 if stamp > 100_000_000_000 else float(stamp)
+        except OverflowError:
+            continue
+        if not math.isfinite(observed) or observed <= 0 or observed > current_time + 300:
+            continue
+        candidates.append((observed, utilization))
+    if not candidates:
+        return None
+    observed, utilization = max(candidates, key=lambda item: item[0])
+
+    def percent(key: str) -> float | None:
+        value = utilization.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            value = float(value)
+        except OverflowError:
+            return None
+        return value if math.isfinite(value) and 0 <= value <= 100 else None
+
+    five_hour, seven_day = percent('fh'), percent('sd')
+    if five_hour is None and seven_day is None:
+        return None
+    return {'five_hour': five_hour, 'seven_day': seven_day,
+            'observed_at': observed, 'stale': current_time - observed > 30 * 60}
+
+
 def status() -> dict[str, Any]:
     rows = processes()
     active = active_profiles(rows)
@@ -510,8 +572,9 @@ def status() -> dict[str, Any]:
     ids = [p.parent.name.lower() for p in found_paths.values() if p is not None]
     if len(ids) != len(set(ids)):
         problem = '多个窗口使用了同一个 Claude 账号，请登录不同账号。'
-    profiles = [{'id': key, 'configured': folders[key], 'active': key in active.values()}
-                for key in DATA]
+    profiles = [{'id': key, 'configured': folders[key], 'active': key in active.values(),
+                 'usage': read_usage(root, found_paths[key])}
+                for key, root in DATA.items()]
     return {'active': next(iter(active.values())) if len(active) == 1 else ('none' if not active else 'many'),
             'busy': busy, 'profiles': profiles, 'configured': folders,
             'last': load_state('sync-state.json').get('last', {}),

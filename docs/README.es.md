@@ -16,6 +16,8 @@ cd claude-account-switcher
 
 Abre **Claude Account Switcher** desde `~/Applications`. La interfaz sigue el idioma del sistema: inglés, chino simplificado, japonés, coreano, español, francés o alemán.
 
+El menú superior derecho permite elegir un idioma o seguir el del sistema. Las dos barras muestran los porcentajes de uso de cinco horas y semanal guardados por Claude para la cuenta seleccionada; no son datos en tiempo real ni números de tokens. Se indica la hora de la muestra y se marca la caché antigua. Si faltan datos o no se puede atribuirlos con seguridad, se dejan en blanco.
+
 ## Uso
 
 1. El perfil actual es la **cuenta A**. Pulsa **Añadir cuenta**, confirma el cambio, inicia sesión en la nueva ventana de Claude y abre **Code**.
@@ -33,6 +35,10 @@ Añade más cuentas del mismo modo. Si una sesión caduca, puede ser necesario v
 - Los registros conflictivos o inválidos se conservan y los índices se respaldan antes de sobrescribirlos. Las eliminaciones no se propagan. El formato interno de Claude Desktop no está documentado y puede cambiar con una actualización.
 
 **Validación:** en el Mac actual se confirmó que la cuenta B muestra la barra lateral local de Code de A. La conciliación de múltiples cuentas y las protecciones se probaron con datos simulados; la continuación de conversaciones reales y otras versiones de Claude no se han validado por completo.
+
+## Opcional: tarea programada oficial
+
+Esta aplicación no automatiza el precalentamiento. En cada cuenta de Claude de pago se puede configurar una [tarea programada oficial de Cowork](https://support.claude.com/en/articles/13854387-schedule-recurring-tasks-in-claude-cowork) con un horario y una instrucción breve; elige Haiku si está disponible. Las tareas en la nube pueden ejecutarse con la aplicación cerrada. Consumen uso y pueden generar cargos por créditos adicionales. No hay garantía de que una petición breve inicie una nueva ventana de cinco horas.
 
 ## Desinstalación
 

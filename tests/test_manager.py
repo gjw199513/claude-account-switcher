@@ -75,6 +75,50 @@ class ReconciliationTests(unittest.TestCase):
         self.assertIn('DO-NOT-COPY', (m.DATA['a'] / 'config.json').read_text())
         self.assertEqual(sorted(p.name for p in self.b.iterdir()), ['local_' + SESSION_1 + '.json', 'local_' + SESSION_2 + '.json'])
 
+    def test_usage_selects_latest_matching_organization_and_reports_staleness(self):
+        now = 1_800_000_000
+        samples = [
+            {'t': (now - 3600) * 1000, 'org': ORG_A, 'u': {'fh': 45, 'sd': 62}},
+            {'t': (now - 120) * 1000, 'org': ORG_B, 'u': {'fh': 3, 'sd': 4}},
+            {'t': (now + 600) * 1000, 'org': ORG_A, 'u': {'fh': 0, 'sd': 0}},
+        ]
+        (m.DATA['a'] / 'plan-usage-history.json').write_text(json.dumps({'version':1,'samples':samples}))
+        result = m.read_usage(m.DATA['a'], self.a, now=now)
+        self.assertEqual(result, {'five_hour':45.0, 'seven_day':62.0, 'observed_at':now-3600, 'stale':True})
+        (m.DATA['a'] / 'plan-usage-history.json').write_text(json.dumps({'version':2,'samples':samples}))
+        self.assertEqual(m.read_usage(m.DATA['a'], self.a, now=now), result)
+
+    def test_usage_rejects_unknown_malformed_and_out_of_range_values(self):
+        now = 1_800_000_000
+        file = m.DATA['a'] / 'plan-usage-history.json'
+        self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+        file.write_text('{')
+        self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+        file.write_text(json.dumps({'version':1,'samples':[{'t':now-1,'org':ORG_A,'u':{'fh':True,'sd':101}}]}))
+        self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+        file.write_text(json.dumps({'version':1,'samples':[{'t':now-1,'org':ORG_A,'u':{'fh':0,'sd':-3}}]}))
+        result = m.read_usage(m.DATA['a'], self.a, now=now)
+        self.assertEqual(result['five_hour'], 0.0)
+        self.assertIsNone(result['seven_day'])
+        self.assertFalse(result['stale'])
+        self.assertIsNone(m.read_usage(m.DATA['a'], None, now=now))
+        file.write_text(json.dumps({'version':True,'samples':[{'t':now-1,'org':ORG_A,'u':{'fh':1}}]}))
+        self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+        file.write_text(json.dumps({'version':3,'samples':[{'t':now-1,'org':ORG_A,'u':{'fh':1}}]}))
+        self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+        file.write_text(json.dumps({'version':2,'samples':[{'t':10**500,'org':ORG_A,'u':{'fh':1}}]}))
+        self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+        file.write_text(json.dumps({'version':2,'samples':[{'t':now-1,'org':ORG_A,'u':{'fh':10**500}}]}))
+        self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+
+    def test_usage_is_not_attributed_when_profile_contains_multiple_accounts(self):
+        now = 1_800_000_000
+        file = m.DATA['a'] / 'plan-usage-history.json'
+        file.write_text(json.dumps({'version':2,'samples':[{'t':now-1,'org':ORG_A,'u':{'fh':1}}]}))
+        self.assertIsNotNone(m.read_usage(m.DATA['a'], self.a, now=now))
+        (m.DATA['a'] / 'claude-code-sessions' / ACCOUNT_B / ORG_A).mkdir(parents=True)
+        self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+
     def test_three_profiles_converge_and_subsequent_updates_propagate(self):
         m.DATA['c'] = Path(self.tmp.name) / 'c'
         c = self.make_profile('c', ACCOUNT_C, ORG_C)
@@ -335,6 +379,8 @@ class ReconciliationTests(unittest.TestCase):
         for locale, values in translations.items():
             self.assertEqual(set(values), keys, locale)
             self.assertEqual(values['current'].count('%@'), 1, locale)
+            self.assertEqual(values['usage_updated'].count('%@'), 1, locale)
+            self.assertEqual(values['usage_stale'].count('%@'), 1, locale)
 
 
 if __name__ == '__main__':
