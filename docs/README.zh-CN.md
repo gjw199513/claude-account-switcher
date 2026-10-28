@@ -1,0 +1,43 @@
+[English](../README.md) · 简体中文 · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
+
+# Claude 账号切换
+
+一个简洁的非官方 macOS 工具，用于切换 Claude 桌面端的多个账号，并保留本地 Code 会话列表。每个账号单独登录，同一时间只运行一个 Claude 窗口。
+
+## 安装
+
+需要 macOS、安装在 `/Applications` 的 Claude Desktop、Xcode 命令行工具，以及 `/usr/bin/python3` 3.9 或更新版本。在终端执行：
+
+```sh
+git clone https://github.com/gjw199513/claude-account-switcher.git
+cd claude-account-switcher
+./install.sh
+```
+
+从 `~/Applications` 打开 **Claude Account Switcher**。界面跟随系统语言，支持简体中文、英语、日语、韩语、西班牙语、法语、德语。
+
+## 使用
+
+1. 当前 Claude 配置为**账号 A**。点击**添加账号**，确认切换，在 Claude 窗口中登录新账号并打开 **Code**。
+2. 首次登录后，在 Claude 中按 `⌘Q` 退出，再选择该账号并点击**切换**一次，让共享会话列表加载。
+3. 以后从列表选择账号并点击**切换**即可。工具会正常关闭当前 Claude、自动处理本地会话索引，再打开选中的账号。切换前请先完成或保存正在运行的工作。
+
+其他账号可以按同样方式添加。登录过期时，仍可能需要重新登录。
+
+## 原理与限制
+
+- 每个账号使用独立的 Claude 数据目录，由 Claude 自己完成登录；工具不导出、复制或替换登录凭据，也不使用代理或按额度自动切换。
+- 本地 Code 会话正文共用 `~/.claude/projects`；后台任务和切换过程会自动合并按账号区分的侧边栏索引。Claude 可能需要重启才会重新加载列表。
+- Claude 云端普通聊天、Cowork、账号额度和云端连接器保持独立。桌面端独立设置也不会自动合并。
+- SSH、WSL、自定义 worktree 等特殊或无法识别的会话可能被跳过。已有临时工作区保留原路径，删除其所属账号目录可能导致会话无法打开。发现多个组织目录时，工具会暂停自动同步，不猜测目标。
+- 冲突或格式异常的记录会保留，覆盖前会备份目标索引；删除操作不会传到其他账号。本工具依赖 Claude Desktop 未公开的内部存储结构，客户端更新后可能失效。
+
+**验证情况：**已在当前 Mac 上确认账号 B 显示了账号 A 的本地 Code 侧边栏；多账号合并和安全处理通过模拟测试。真实会话跨账号续接及其他 Claude 版本尚未全部验证。
+
+## 卸载
+
+运行 `./uninstall.sh`。Claude 账号目录、会话和本地备份会保留。
+
+## 许可证
+
+[MIT](../LICENSE)。本项目与 Anthropic 无隶属或官方背书关系。

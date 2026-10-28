@@ -1,0 +1,16 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the sync and switch logic
+        run: python3 -m unittest discover -s tests -v
+      - name: Check the native interface and scripts
+        run: |
+          swiftc -typecheck App.swift
+          bash -n install.sh uninstall.sh
+          python3 -m json.tool assets/translations.json >/dev/null

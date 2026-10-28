@@ -1,0 +1,79 @@
+{
+  "en": {
+    "title":"Claude Account Switcher", "subtitle":"Sign in once per account. Switch accounts and continue your local Code sessions.",
+    "account":"Account", "current":"Current: Account %@", "none":"Claude is not running", "many":"More than one Claude window is open", "unknown":"An unrecognized Claude profile is open",
+    "switch":"Switch", "add":"Add account", "working":"Switching…", "checking":"Checking Claude…", "warning_title":"Switch accounts?",
+    "warning_body":"Claude must close to switch accounts. Finish or save any running work first.", "continue":"Continue", "cancel":"Cancel", "ok":"OK", "error_title":"Could not switch",
+    "first_login":"Sign in to this account in Claude and open Code. Then quit and reopen this account once to load the shared session list.",
+    "sync_notice":"Some session records were kept separately because of conflicts or unsupported formats. See the README for details.",
+    "error_generic":"The operation could not be completed. Check Claude and try again.", "error_multiple":"Close other Claude windows and keep only one managed profile open.",
+    "error_duplicate":"Two profiles are signed in to the same Claude account. Sign in with a different account.", "error_org":"This account has multiple organization folders. Automatic session sync has stopped to avoid guessing.",
+    "error_timeout":"Claude did not close normally. The switch was stopped.", "error_busy":"Another switch or sync is in progress. Please try again.", "error_limit":"This tool supports up to 26 local profiles."
+  },
+  "zh": {
+    "title":"Claude 账号切换", "subtitle":"每个账号登录一次，切换后继续使用本地 Code 会话。",
+    "account":"账号", "current":"当前：账号 %@", "none":"Claude 当前未打开", "many":"检测到多个 Claude 窗口", "unknown":"检测到未识别的 Claude 配置",
+    "switch":"切换", "add":"添加账号", "working":"正在切换…", "checking":"正在检查 Claude…", "warning_title":"切换账号？",
+    "warning_body":"切换需要先关闭 Claude。请先完成或保存正在进行的工作。", "continue":"继续切换", "cancel":"取消", "ok":"好", "error_title":"无法切换",
+    "first_login":"请在 Claude 窗口登录该账号并进入 Code，然后退出并再次打开此账号，让共享会话列表加载。",
+    "sync_notice":"部分会话因冲突或格式不受支持而保留在原处，详见 README。",
+    "error_generic":"操作未完成，请检查 Claude 状态后重试。", "error_multiple":"请关闭其他 Claude 窗口，只保留一个受管理的窗口。",
+    "error_duplicate":"两个配置登录了同一个 Claude 账号，请改用不同账号。", "error_org":"该账号存在多个组织目录，为避免误判已暂停会话同步。",
+    "error_timeout":"Claude 未能正常退出，切换已停止。", "error_busy":"另一个切换或同步正在进行，请稍后重试。", "error_limit":"此工具最多支持 26 个本机账号。"
+  },
+  "ja": {
+    "title":"Claude アカウント切替", "subtitle":"各アカウントに一度ログインすれば、ローカルの Code セッションを引き継いで切り替えられます。",
+    "account":"アカウント", "current":"現在：アカウント %@", "none":"Claude は起動していません", "many":"複数の Claude ウィンドウが開いています", "unknown":"未対応の Claude プロファイルが開いています",
+    "switch":"切り替え", "add":"アカウントを追加", "working":"切り替え中…", "checking":"Claude を確認中…", "warning_title":"アカウントを切り替えますか？",
+    "warning_body":"切り替えるには Claude を終了します。実行中の作業を完了または保存してください。", "continue":"続ける", "cancel":"キャンセル", "ok":"OK", "error_title":"切り替えできません",
+    "first_login":"Claude でこのアカウントにログインして Code を開き、一度終了して再度開くと共有セッション一覧が読み込まれます。",
+    "sync_notice":"競合または未対応の形式により、一部のセッションは元の場所に保持されました。詳しくは README を参照してください。",
+    "error_generic":"操作を完了できませんでした。Claude の状態を確認して再試行してください。", "error_multiple":"ほかの Claude ウィンドウを閉じ、一つだけ残してください。",
+    "error_duplicate":"二つのプロファイルが同じ Claude アカウントです。別のアカウントでログインしてください。", "error_org":"複数の組織フォルダーがあるため、誤判定を避けて同期を停止しました。",
+    "error_timeout":"Claude が正常に終了しなかったため、切り替えを停止しました。", "error_busy":"別の切り替えまたは同期が実行中です。", "error_limit":"ローカルプロファイルは最大 26 個です。"
+  },
+  "ko": {
+    "title":"Claude 계정 전환", "subtitle":"각 계정에 한 번 로그인하면 로컬 Code 세션을 이어서 사용할 수 있습니다.",
+    "account":"계정", "current":"현재: 계정 %@", "none":"Claude가 실행 중이 아닙니다", "many":"Claude 창이 여러 개 열려 있습니다", "unknown":"알 수 없는 Claude 프로필이 열려 있습니다",
+    "switch":"전환", "add":"계정 추가", "working":"전환 중…", "checking":"Claude 확인 중…", "warning_title":"계정을 전환할까요?",
+    "warning_body":"전환하려면 Claude를 종료해야 합니다. 진행 중인 작업을 완료하거나 저장하세요.", "continue":"계속", "cancel":"취소", "ok":"확인", "error_title":"전환할 수 없습니다",
+    "first_login":"Claude에서 이 계정으로 로그인하고 Code를 연 다음, 계정을 한 번 종료하고 다시 열어 공유 세션 목록을 불러오세요.",
+    "sync_notice":"충돌 또는 지원되지 않는 형식으로 인해 일부 세션은 원래 위치에 보관되었습니다. README를 참조하세요.",
+    "error_generic":"작업을 완료하지 못했습니다. Claude 상태를 확인하고 다시 시도하세요.", "error_multiple":"다른 Claude 창을 닫고 관리 중인 창 하나만 남겨 주세요.",
+    "error_duplicate":"두 프로필이 같은 Claude 계정에 로그인되어 있습니다. 다른 계정으로 로그인하세요.", "error_org":"조직 폴더가 여러 개여서 잘못 선택하지 않도록 동기화를 중지했습니다.",
+    "error_timeout":"Claude가 정상 종료되지 않아 전환을 중지했습니다.", "error_busy":"다른 전환 또는 동기화가 진행 중입니다.", "error_limit":"로컬 프로필은 최대 26개까지 지원합니다."
+  },
+  "es": {
+    "title":"Cambio de cuenta de Claude", "subtitle":"Inicia sesión una vez por cuenta y continúa tus sesiones locales de Code al cambiar.",
+    "account":"Cuenta", "current":"Actual: cuenta %@", "none":"Claude no está abierto", "many":"Hay varias ventanas de Claude abiertas", "unknown":"Hay un perfil de Claude desconocido abierto",
+    "switch":"Cambiar", "add":"Añadir cuenta", "working":"Cambiando…", "checking":"Comprobando Claude…", "warning_title":"¿Cambiar de cuenta?",
+    "warning_body":"Claude debe cerrarse para cambiar de cuenta. Termina o guarda primero el trabajo en curso.", "continue":"Continuar", "cancel":"Cancelar", "ok":"Aceptar", "error_title":"No se pudo cambiar",
+    "first_login":"Inicia sesión en esta cuenta en Claude y abre Code. Después cierra y vuelve a abrir esta cuenta para cargar la lista compartida.",
+    "sync_notice":"Algunas sesiones se conservaron por separado debido a conflictos o formatos no compatibles. Consulta el README.",
+    "error_generic":"No se pudo completar la operación. Comprueba Claude e inténtalo de nuevo.", "error_multiple":"Cierra las demás ventanas de Claude y deja solo una abierta.",
+    "error_duplicate":"Dos perfiles usan la misma cuenta de Claude. Inicia sesión con otra cuenta.", "error_org":"Hay varias carpetas de organización; se ha detenido la sincronización para evitar errores.",
+    "error_timeout":"Claude no se cerró correctamente. Se detuvo el cambio.", "error_busy":"Hay otro cambio o sincronización en curso.", "error_limit":"Se admiten hasta 26 perfiles locales."
+  },
+  "fr": {
+    "title":"Changement de compte Claude", "subtitle":"Connectez chaque compte une fois et retrouvez vos sessions Code locales après le changement.",
+    "account":"Compte", "current":"Actuel : compte %@", "none":"Claude n’est pas ouvert", "many":"Plusieurs fenêtres Claude sont ouvertes", "unknown":"Un profil Claude inconnu est ouvert",
+    "switch":"Changer", "add":"Ajouter un compte", "working":"Changement…", "checking":"Vérification de Claude…", "warning_title":"Changer de compte ?",
+    "warning_body":"Claude doit se fermer pour changer de compte. Terminez ou enregistrez d’abord le travail en cours.", "continue":"Continuer", "cancel":"Annuler", "ok":"OK", "error_title":"Changement impossible",
+    "first_login":"Connectez ce compte dans Claude et ouvrez Code. Fermez puis rouvrez ce compte une fois pour charger la liste partagée.",
+    "sync_notice":"Certaines sessions ont été conservées séparément en raison de conflits ou de formats non pris en charge. Consultez le README.",
+    "error_generic":"L’opération a échoué. Vérifiez Claude et réessayez.", "error_multiple":"Fermez les autres fenêtres Claude et n’en gardez qu’une.",
+    "error_duplicate":"Deux profils utilisent le même compte Claude. Connectez un autre compte.", "error_org":"Plusieurs dossiers d’organisation existent ; la synchronisation est suspendue pour éviter toute erreur.",
+    "error_timeout":"Claude ne s’est pas fermé normalement. Le changement est arrêté.", "error_busy":"Un autre changement ou une synchronisation est en cours.", "error_limit":"L’outil prend en charge 26 profils locaux au maximum."
+  },
+  "de": {
+    "title":"Claude-Konto wechseln", "subtitle":"Melde jedes Konto einmal an und setze lokale Code-Sitzungen nach dem Wechsel fort.",
+    "account":"Konto", "current":"Aktuell: Konto %@", "none":"Claude ist nicht geöffnet", "many":"Mehrere Claude-Fenster sind geöffnet", "unknown":"Ein unbekanntes Claude-Profil ist geöffnet",
+    "switch":"Wechseln", "add":"Konto hinzufügen", "working":"Wechsel läuft…", "checking":"Claude wird geprüft…", "warning_title":"Konto wechseln?",
+    "warning_body":"Zum Wechseln muss Claude beendet werden. Schließe laufende Arbeiten zuerst ab oder speichere sie.", "continue":"Fortfahren", "cancel":"Abbrechen", "ok":"OK", "error_title":"Wechsel nicht möglich",
+    "first_login":"Melde dieses Konto in Claude an und öffne Code. Beende und öffne das Konto danach einmal erneut, um die gemeinsame Sitzungsliste zu laden.",
+    "sync_notice":"Einige Sitzungen wurden wegen Konflikten oder nicht unterstützter Formate getrennt aufbewahrt. Einzelheiten stehen in der README.",
+    "error_generic":"Der Vorgang konnte nicht abgeschlossen werden. Prüfe Claude und versuche es erneut.", "error_multiple":"Schließe andere Claude-Fenster und lasse nur ein verwaltetes Fenster offen.",
+    "error_duplicate":"Zwei Profile verwenden dasselbe Claude-Konto. Melde dich mit einem anderen Konto an.", "error_org":"Mehrere Organisationsordner gefunden. Die Synchronisierung wurde vorsichtshalber angehalten.",
+    "error_timeout":"Claude wurde nicht ordnungsgemäß beendet. Der Wechsel wurde angehalten.", "error_busy":"Ein anderer Wechsel oder eine Synchronisierung läuft bereits.", "error_limit":"Es werden höchstens 26 lokale Profile unterstützt."
+  }
+}
