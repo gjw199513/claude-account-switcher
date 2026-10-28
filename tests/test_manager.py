@@ -1,4 +1,5 @@
 import importlib.util
+import datetime
 import json
 import os
 from pathlib import Path
@@ -118,6 +119,160 @@ class ReconciliationTests(unittest.TestCase):
         self.assertIsNotNone(m.read_usage(m.DATA['a'], self.a, now=now))
         (m.DATA['a'] / 'claude-code-sessions' / ACCOUNT_B / ORG_A).mkdir(parents=True)
         self.assertIsNone(m.read_usage(m.DATA['a'], self.a, now=now))
+
+    def test_warmup_sends_only_once_at_scheduled_time_and_is_isolated(self):
+        now = datetime.datetime(2026, 10, 28, 9, 0, 10)
+        calls = []
+        def run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            if cmd[1:] == ['auth', 'status']:
+                payload = {'loggedIn': True, 'authMethod': 'claude.ai', 'apiProvider': 'firstParty',
+                           'email': 'person@example.test', 'orgId': ORG_A,
+                           'configDirectory': str(m.STATE / 'warmup-cli/a')}
+                stdout = json.dumps(payload)
+            else:
+                event = {'type':'rate_limit_event', 'rate_limit_info':{'unifiedWindows':{
+                    'five_hour':{'utilization':0.46}, 'seven_day':{'utilization':0.31}}}}
+                stdout = json.dumps(event) + '\n' + json.dumps({'type':'result','is_error':False})
+            return mock.Mock(returncode=0, stdout=stdout)
+        with mock.patch.object(m, 'warmup_cli', return_value='/mock/claude'), \
+             mock.patch.object(m.subprocess, 'run', side_effect=run), \
+             mock.patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'never-forward-this'}):
+            m.warmup_bind('a')
+            m.warmup_save('a', True, 9, 0, now=now - datetime.timedelta(minutes=30))
+            m.warmup_tick(now - datetime.timedelta(seconds=20))
+            m.warmup_tick(now)
+            m.warmup_tick(now + datetime.timedelta(seconds=20))
+        sends = [(cmd, opts) for cmd, opts in calls if '-p' in cmd]
+        self.assertEqual(len(sends), 1)
+        cmd, opts = sends[0]
+        self.assertEqual(cmd[cmd.index('--model') + 1], 'haiku')
+        self.assertEqual(cmd[cmd.index('--tools') + 1], '')
+        self.assertIn('--no-session-persistence', cmd)
+        self.assertNotIn('ANTHROPIC_API_KEY', opts['env'])
+        self.assertEqual(opts['env']['CLAUDE_CONFIG_DIR'], str(m.STATE / 'warmup-cli/a'))
+        state = m.load_state('warmup.json')['profiles']['a']
+        self.assertEqual(state['last_status'], 'success')
+        self.assertNotIn('person@example.test', json.dumps(state))
+        self.assertAlmostEqual(m.read_warmup_usage('a', m.DATA['a'], self.a)['five_hour'], 46.0)
+        self.assertAlmostEqual(m.read_warmup_usage('a', m.DATA['a'], self.a)['seven_day'], 31.0)
+        (m.DATA['a'] / 'config.json').write_text(json.dumps({'lastKnownAccountUuid': ACCOUNT_C}))
+        self.assertIsNone(m.read_warmup_usage('a', m.DATA['a'], self.a))
+
+    def test_warmup_stream_ignores_malformed_or_missing_utilization(self):
+        events = [
+            {'type':'result', 'is_error':False},
+            {'type':'rate_limit_event', 'rate_limit_info':{'unifiedWindows':{
+                'five_hour':{'utilization':True}, 'seven_day':{'utilization':1.5}}}},
+        ]
+        usage, success = m.parse_warmup_stream('\n'.join(map(json.dumps, events)), now=1000)
+        self.assertTrue(success)
+        self.assertIsNone(usage)
+        events[-1]['rate_limit_info']['unifiedWindows']['five_hour']['utilization'] = 0
+        usage, success = m.parse_warmup_stream('\n'.join(map(json.dumps, events)), now=1000)
+        self.assertEqual(usage, {'five_hour':0.0, 'seven_day':None, 'observed_at':1000})
+
+    def test_warmup_requires_confirmation_and_does_not_guess_a_mismatched_account(self):
+        identity = {'email': 'person@example.test', 'org': ORG_A, 'account': ACCOUNT_A, 'cli': '/mock/claude'}
+        with self.assertRaises(m.Problem):
+            m.warmup_save('a', True, 9, 0)
+        with mock.patch.object(m, 'warmup_identity', return_value=identity):
+            m.warmup_bind('a')
+            m.warmup_save('a', True, 9, 0, now=datetime.datetime(2026, 10, 28, 8, 30))
+        other = dict(identity, email='other@example.test')
+        with mock.patch.object(m, 'warmup_identity', return_value=other), \
+             mock.patch.object(m.subprocess, 'run') as run:
+            m.warmup_tick(datetime.datetime(2026, 10, 28, 8, 59, 55))
+            m.warmup_tick(datetime.datetime(2026, 10, 28, 9, 0, 15))
+            run.assert_not_called()
+        self.assertEqual(m.load_state('warmup.json')['profiles']['a']['last_status'], 'failed')
+
+    def test_missed_warmup_requires_user_choice(self):
+        identity = {'email': 'person@example.test', 'org': ORG_A, 'account': ACCOUNT_A, 'cli': '/mock/claude'}
+        now = datetime.datetime(2026, 10, 28, 10, 0)
+        with mock.patch.object(m, 'warmup_identity', return_value=identity), \
+             mock.patch.object(m.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout='{"type":"result","is_error": false}')) as run:
+            m.warmup_bind('a')
+            m.warmup_save('a', True, 9, 0)
+            m.warmup_tick(now)
+            run.assert_not_called()
+            self.assertTrue(m.warmup_public(now)['a']['pending'])
+            self.assertTrue(m.warmup_execute('a', 'catchup', now)['sent'])
+            self.assertFalse(m.warmup_public(now)['a']['pending'])
+            self.assertEqual(run.call_count, 1)
+            with self.assertRaises(m.Problem):
+                m.warmup_execute('a', 'catchup', now)
+
+    def test_waking_just_after_scheduled_time_still_requires_confirmation(self):
+        identity = {'email': 'person@example.test', 'org': ORG_A, 'account': ACCOUNT_A, 'cli': '/mock/claude'}
+        with mock.patch.object(m, 'warmup_identity', return_value=identity), \
+             mock.patch.object(m.subprocess, 'run') as run:
+            m.warmup_bind('a')
+            m.warmup_save('a', True, 9, 0, now=datetime.datetime(2026, 10, 28, 8, 0))
+            m.warmup_tick(datetime.datetime(2026, 10, 28, 8, 30))
+            woke = datetime.datetime(2026, 10, 28, 9, 0, 30)
+            m.warmup_tick(woke)
+            run.assert_not_called()
+            self.assertTrue(m.warmup_public(woke)['a']['pending'])
+
+    def test_warmup_end_to_end_with_local_fake_cli(self):
+        root = Path(self.tmp.name)
+        fake = root / 'fake-claude'
+        counter = root / 'sent-count'
+        fake.write_text('''#!/usr/bin/python3
+import json, os, sys
+from pathlib import Path
+if sys.argv[1:] == ['auth', 'status']:
+    print(json.dumps({'loggedIn':True, 'authMethod':'claude.ai', 'apiProvider':'firstParty',
+                      'email':'person@example.test', 'orgId':''' + repr(ORG_A) + ''',
+                      'configDirectory':os.environ['CLAUDE_CONFIG_DIR']}))
+else:
+    assert '-p' in sys.argv and sys.argv[sys.argv.index('--model')+1] == 'haiku'
+    assert sys.argv[sys.argv.index('--tools')+1] == '' and '--no-session-persistence' in sys.argv
+    assert 'ANTHROPIC_API_KEY' not in os.environ
+    count = Path(''' + repr(str(counter)) + ''')
+    count.write_text(str(int(count.read_text()) + 1 if count.exists() else 1))
+    print(json.dumps({'type':'rate_limit_event', 'rate_limit_info':{'unifiedWindows':{
+        'five_hour':{'utilization':0.25}, 'seven_day':{'utilization':0.10}}}}))
+    print(json.dumps({'type':'result', 'is_error':False}))
+''')
+        fake.chmod(0o700)
+        with mock.patch.object(m, 'warmup_cli', return_value=str(fake)):
+            m.warmup_bind('a')
+            m.warmup_save('a', True, 9, 0, now=datetime.datetime(2026, 10, 28, 8, 0))
+            m.warmup_tick(datetime.datetime(2026, 10, 28, 8, 59, 50))
+            m.warmup_tick(datetime.datetime(2026, 10, 28, 9, 0, 10))
+            m.warmup_tick(datetime.datetime(2026, 10, 28, 9, 0, 30))
+            self.assertEqual(counter.read_text(), '1')
+            self.assertEqual(m.load_state('warmup.json')['profiles']['a']['last_status'], 'success')
+            self.assertEqual(m.read_warmup_usage('a', m.DATA['a'], self.a)['five_hour'], 25.0)
+            missed = datetime.datetime(2026, 10, 29, 10, 0)
+            m.warmup_tick(missed)
+            self.assertTrue(m.warmup_public(missed)['a']['pending'])
+            self.assertEqual(counter.read_text(), '1')
+            self.assertTrue(m.warmup_execute('a', 'catchup', missed)['sent'])
+            self.assertEqual(counter.read_text(), '2')
+
+    def test_login_launcher_does_not_store_proxy_credentials(self):
+        with mock.patch.object(m, 'warmup_cli', return_value='/mock/claude'), \
+             mock.patch.dict(os.environ, {'HTTPS_PROXY': 'http://private-secret@example.test:80'}):
+            command = Path(m.warmup_login_command('a')['login_command']).read_text()
+        self.assertIn('auth login', command)
+        self.assertNotIn('private-secret', command)
+
+    def test_login_launcher_runs_official_cli_with_isolated_environment(self):
+        root = Path(self.tmp.name)
+        fake = root / 'fake cli'
+        fake.write_text('#!/bin/bash\nprintf "dir=%s|key=%s|args=%s %s\\n" "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY:-}" "$1" "$2"\n')
+        fake.chmod(0o700)
+        with mock.patch.object(m, 'STATE', root / 'state with spaces'), \
+             mock.patch.object(m, 'warmup_cli', return_value=str(fake)), \
+             mock.patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'not-for-cli'}):
+            launcher = m.warmup_login_command('a')['login_command']
+            result = m.subprocess.run([launcher], capture_output=True, text=True, check=True)
+            self.assertIn('dir=' + str(m.STATE / 'warmup-cli/a'), result.stdout)
+            self.assertIn('|key=|args=auth login', result.stdout)
+            self.assertNotIn('not-for-cli', result.stdout)
 
     def test_three_profiles_converge_and_subsequent_updates_propagate(self):
         m.DATA['c'] = Path(self.tmp.name) / 'c'
@@ -381,6 +536,9 @@ class ReconciliationTests(unittest.TestCase):
             self.assertEqual(values['current'].count('%@'), 1, locale)
             self.assertEqual(values['usage_updated'].count('%@'), 1, locale)
             self.assertEqual(values['usage_stale'].count('%@'), 1, locale)
+            for key in ('warm_account', 'warm_connected', 'warm_signed_in', 'warm_missed_title'):
+                self.assertEqual(values[key].count('%@'), 1, (locale, key))
+            self.assertEqual(values['warm_confirm_body'].count('%@'), 2, locale)
 
 
 if __name__ == '__main__':

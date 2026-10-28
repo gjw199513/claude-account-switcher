@@ -16,7 +16,7 @@ cd claude-account-switcher
 
 Abre **Claude Account Switcher** desde `~/Applications`. La interfaz sigue el idioma del sistema: inglés, chino simplificado, japonés, coreano, español, francés o alemán.
 
-El menú superior derecho permite elegir un idioma o seguir el del sistema. Las dos barras muestran los porcentajes de uso de cinco horas y semanal guardados por Claude para la cuenta seleccionada; no son datos en tiempo real ni números de tokens. Se indica la hora de la muestra y se marca la caché antigua. Si faltan datos o no se puede atribuirlos con seguridad, se dejan en blanco.
+El menú superior derecho permite elegir un idioma o seguir el del sistema. Las dos barras muestran los porcentajes de uso de cinco horas y semanal guardados por Claude Desktop o por el evento del CLI durante la preparación; no son datos en tiempo real ni números de tokens. Se indica la hora de la muestra y se ocultan los valores de caché de más de 30 minutos. Si faltan datos o no se puede atribuirlos con seguridad, se dejan en blanco.
 
 ## Uso
 
@@ -36,9 +36,11 @@ Añade más cuentas del mismo modo. Si una sesión caduca, puede ser necesario v
 
 **Validación:** en el Mac actual se confirmó que la cuenta B muestra la barra lateral local de Code de A. La conciliación de múltiples cuentas y las protecciones se probaron con datos simulados; la continuación de conversaciones reales y otras versiones de Claude no se han validado por completo.
 
-## Opcional: tarea programada oficial
+## Opcional: preparación local programada
 
-Esta aplicación no automatiza el precalentamiento. En cada cuenta de Claude de pago se puede configurar una [tarea programada oficial de Cowork](https://support.claude.com/en/articles/13854387-schedule-recurring-tasks-in-claude-cowork) con un horario y una instrucción breve; elige Haiku si está disponible. Las tareas en la nube pueden ejecutarse con la aplicación cerrada. Consumen uso y pueden generar cargos por créditos adicionales. No hay garantía de que una petición breve inicie una nueva ventana de cinco horas.
+Instala [Claude Code CLI](https://code.claude.com/docs/en/setup) 2.1.268 o posterior. Selecciona una cuenta, abre los ajustes de preparación, inicia sesión en el CLI oficial, actualiza y confirma el correo antes de activar el horario. Cada cuenta usa una configuración de CLI aislada; la aplicación no lee las credenciales.
+
+Con la sesión de macOS iniciada, una tarea en segundo plano envía una petición breve a Haiku incluso si se cierra la ventana. Si el Mac estaba apagado o en reposo, al abrir la aplicación más tarde ese mismo día se pregunta antes de recuperar la petición. Los fallos no se reintentan ese día. Consume cuota y puede generar cargos adicionales; no garantiza una nueva ventana de cinco horas.
 
 ## Desinstalación
 

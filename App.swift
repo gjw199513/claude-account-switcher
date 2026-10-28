@@ -1,22 +1,22 @@
-// Hallmark · cockpit interface · dark graphite, cool cyan and restrained amber.
-// Pre-emit critique: philosophy 5, hierarchy 5, execution 4, specificity 5, restraint 4, variety 4.
+// Hallmark · quiet industrial cockpit · graphite, warm ivory and copper.
+// Pre-emit critique: philosophy 5, hierarchy 5, execution 4, specificity 5, restraint 5, variety 4.
 import AppKit
 import Combine
 import Foundation
 import SwiftUI
 
 private enum Cockpit {
-    static let background = Color(red: 0.035, green: 0.049, blue: 0.068)
-    static let surface = Color(red: 0.060, green: 0.081, blue: 0.105)
-    static let surfaceRaised = Color(red: 0.078, green: 0.108, blue: 0.134)
-    static let outline = Color(red: 0.180, green: 0.266, blue: 0.302)
-    static let ink = Color(red: 0.913, green: 0.954, blue: 0.950)
-    static let muted = Color(red: 0.573, green: 0.669, blue: 0.684)
-    static let dim = Color(red: 0.381, green: 0.482, blue: 0.511)
-    static let cyan = Color(red: 0.474, green: 0.901, blue: 0.898)
-    static let amber = Color(red: 0.969, green: 0.628, blue: 0.406)
-    static let actionInk = Color(red: 0.035, green: 0.098, blue: 0.113)
-    static let grid = Color(red: 0.196, green: 0.314, blue: 0.350)
+    static let background = Color(red: 20/255, green: 20/255, blue: 19/255)
+    static let surface = Color(red: 31/255, green: 30/255, blue: 29/255)
+    static let surfaceRaised = Color(red: 42/255, green: 39/255, blue: 36/255)
+    static let outline = Color(red: 77/255, green: 72/255, blue: 65/255)
+    static let ink = Color(red: 250/255, green: 249/255, blue: 245/255)
+    static let muted = Color(red: 176/255, green: 174/255, blue: 165/255)
+    static let dim = Color(red: 116/255, green: 110/255, blue: 100/255)
+    static let cyan = Color(red: 217/255, green: 119/255, blue: 87/255)
+    static let amber = Color(red: 225/255, green: 147/255, blue: 117/255)
+    static let actionInk = Color(red: 20/255, green: 20/255, blue: 19/255)
+    static let grid = Color(red: 90/255, green: 75/255, blue: 65/255)
 }
 
 private struct Profile: Identifiable {
@@ -32,6 +32,15 @@ private struct UsageSnapshot {
     let stale: Bool
 }
 
+private struct WarmupSchedule {
+    let enabled: Bool
+    let hour: Int
+    let minute: Int
+    let bound: Bool
+    let pending: Bool
+    let lastStatus: String?
+}
+
 private final class AccountModel: ObservableObject {
     @Published var strings: [String: String] = [:]
     @Published var language: String
@@ -40,12 +49,19 @@ private final class AccountModel: ObservableObject {
     @Published var active = "none"
     @Published var problemCode: String?
     @Published var isBusy = false
+    @Published var warmups: [String: WarmupSchedule] = [:]
+    @Published var warmupInfo: [String: Any] = [:]
+    @Published var isWarmupBusy = false
+    @Published var showingWarmupSettings = false
 
     private let script = NSHomeDirectory() + "/Library/Application Support/Local Claude Accounts/manager.py"
     private var translations: [String: [String: String]] = [:]
     private var isPolling = false
     private var timer: Timer?
     private var preferredSelection: String?
+    private var promptedMisses: Set<String> = []
+    private var promptDay = Date()
+    private var showingMiss = false
     private let preferenceKey = "interfaceLanguage"
     let languages: [(String, String)] = [
         ("en", "English"), ("zh", "简体中文"), ("ja", "日本語"), ("ko", "한국어"),
@@ -152,6 +168,13 @@ private final class AccountModel: ObservableObject {
             }
             return Profile(id: id, configured: entry["configured"] as? Bool ?? false, usage: usage)
         }
+        let saved = result["warmup"] as? [String: [String: Any]] ?? [:]
+        warmups = saved.mapValues { value in
+            WarmupSchedule(enabled: value["enabled"] as? Bool ?? false,
+                           hour: value["hour"] as? Int ?? 9, minute: value["minute"] as? Int ?? 0,
+                           bound: value["bound"] as? Bool ?? false, pending: value["pending"] as? Bool ?? false,
+                           lastStatus: value["last_status"] as? String)
+        }
         let candidate = preferredSelection ?? selectedID
         if profiles.contains(where: { $0.id == candidate }) {
             selectedID = candidate
@@ -161,6 +184,7 @@ private final class AccountModel: ObservableObject {
             selectedID = profiles.first?.id ?? ""
         }
         preferredSelection = nil
+        considerMissedWarmup()
     }
 
     func refresh() {
@@ -183,6 +207,107 @@ private final class AccountModel: ObservableObject {
         dialog.informativeText = message
         dialog.addButton(withTitle: t("ok"))
         dialog.runModal()
+    }
+
+    private func warmCommand(_ arguments: [String], completion: @escaping ([String: Any]) -> Void) {
+        guard !isWarmupBusy else { return }
+        isWarmupBusy = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let result = self.invoke(arguments)
+            DispatchQueue.main.async {
+                self.isWarmupBusy = false
+                completion(result)
+            }
+        }
+    }
+
+    private func showWarmError(_ result: [String: Any]) {
+        let code = result["error_code"] as? String ?? "error_generic"
+        alert(title: t("error_title"), message: t(code))
+    }
+
+    func loadWarmupInfo(_ key: String) {
+        warmCommand(["warmup-info", key]) { [weak self] result in
+            guard let self = self else { return }
+            if result["ok"] as? Bool == true { self.warmupInfo = result }
+            else { self.showWarmError(result) }
+        }
+    }
+
+    func openWarmupLogin(_ key: String) {
+        if warmupInfo["cli_available"] as? Bool == false {
+            NSWorkspace.shared.open(URL(string: "https://code.claude.com/docs/en/setup")!)
+            return
+        }
+        warmCommand(["warmup-login", key]) { [weak self] result in
+            guard let self = self else { return }
+            guard result["ok"] as? Bool == true, let path = result["login_command"] as? String else {
+                self.showWarmError(result); return
+            }
+            if NSWorkspace.shared.open(URL(fileURLWithPath: path)) {
+                self.alert(title: self.t("warm_login"), message: self.t("warm_login_help"))
+            } else { self.alert(title: self.t("error_title"), message: self.t("error_generic")) }
+        }
+    }
+
+    func bindWarmup(_ key: String) {
+        guard let email = warmupInfo["email"] as? String else { return }
+        let dialog = NSAlert()
+        dialog.messageText = t("warm_confirm_title")
+        dialog.informativeText = String(format: t("warm_confirm_body"), email, key.uppercased())
+        dialog.addButton(withTitle: t("warm_confirm"))
+        dialog.addButton(withTitle: t("cancel"))
+        guard dialog.runModal() == .alertFirstButtonReturn else { return }
+        warmCommand(["warmup-bind", key]) { [weak self] result in
+            guard let self = self else { return }
+            if result["ok"] as? Bool == true { self.loadWarmupInfo(key); self.refresh() }
+            else { self.showWarmError(result) }
+        }
+    }
+
+    func saveWarmup(_ key: String, enabled: Bool, hour: Int, minute: Int) {
+        warmCommand(["warmup-save", key, "--enabled", enabled ? "yes" : "no",
+                     "--hour", String(hour), "--minute", String(minute)]) { [weak self] result in
+            guard let self = self else { return }
+            if result["ok"] as? Bool == true { self.showingWarmupSettings = false; self.refresh() }
+            else { self.showWarmError(result) }
+        }
+    }
+
+    func runWarmup(_ key: String, reason: String = "manual") {
+        warmCommand(["warmup-run", key, "--reason", reason]) { [weak self] result in
+            guard let self = self else { return }
+            self.refresh()
+            if result["ok"] as? Bool != true { self.showWarmError(result) }
+            else { self.alert(title: self.t("warm_title"),
+                              message: self.t(result["sent"] as? Bool == true ? "warm_sent" : "warm_failed")) }
+        }
+    }
+
+    private func considerMissedWarmup() {
+        if !Calendar.current.isDate(promptDay, inSameDayAs: Date()) {
+            promptedMisses.removeAll()
+            promptDay = Date()
+        }
+        guard !showingMiss, !showingWarmupSettings, !isBusy, !isWarmupBusy,
+              let key = profiles.map(\.id).first(where: { warmups[$0]?.pending == true && !promptedMisses.contains($0) }) else { return }
+        promptedMisses.insert(key)
+        showingMiss = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let dialog = NSAlert()
+            dialog.messageText = String(format: self.t("warm_missed_title"), key.uppercased())
+            dialog.informativeText = self.t("warm_missed_body")
+            dialog.addButton(withTitle: self.t("warm_send_now"))
+            dialog.addButton(withTitle: self.t("warm_skip"))
+            let send = dialog.runModal() == .alertFirstButtonReturn
+            self.showingMiss = false
+            if send { self.runWarmup(key, reason: "catchup") }
+            else {
+                self.warmCommand(["warmup-dismiss", key]) { [weak self] _ in self?.refresh() }
+            }
+        }
     }
 
     private func confirm(_ result: [String: Any], target: String?) -> Bool {
@@ -311,11 +436,26 @@ private struct Panel<Content: View>: View {
     var body: some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: 12)
+                CutCorner(cut: 12)
                     .fill(LinearGradient(colors: [Cockpit.surfaceRaised.opacity(0.80), Cockpit.surface.opacity(0.94)],
                                          startPoint: .topLeading, endPoint: .bottomTrailing))
             )
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Cockpit.outline.opacity(0.75), lineWidth: 1))
+            .overlay(CutCorner(cut: 12).stroke(Cockpit.outline.opacity(0.75), lineWidth: 1))
+    }
+}
+
+private struct CutCorner: Shape {
+    var cut: CGFloat
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - cut, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + cut))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + cut, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - cut))
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -350,8 +490,8 @@ private struct ProfileRow: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 9).fill(selected ? Cockpit.cyan.opacity(0.11) : (hovering ? Cockpit.ink.opacity(0.04) : Color.clear)))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? Cockpit.cyan.opacity(0.48) : Color.clear, lineWidth: 1))
+            .background(CutCorner(cut: 7).fill(selected ? Cockpit.cyan.opacity(0.11) : (hovering ? Cockpit.ink.opacity(0.04) : Color.clear)))
+            .overlay(CutCorner(cut: 7).stroke(selected ? Cockpit.cyan.opacity(0.48) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -367,8 +507,8 @@ private struct PrimaryControl: ButtonStyle {
             .font(.system(size: 13, weight: .bold))
             .foregroundColor(Cockpit.actionInk)
             .padding(.horizontal, 18).frame(height: 42)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Cockpit.cyan.opacity(configuration.isPressed ? 0.78 : 1)))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Cockpit.ink.opacity(0.25), lineWidth: 1))
+            .background(CutCorner(cut: 7).fill(Cockpit.cyan.opacity(configuration.isPressed ? 0.78 : 1)))
+            .overlay(CutCorner(cut: 7).stroke(Cockpit.ink.opacity(0.25), lineWidth: 1))
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
     }
 }
@@ -380,12 +520,21 @@ private struct CockpitView: View {
         (model.active != "none" && model.active != "many" && model.active != "unknown") ? Cockpit.cyan : Cockpit.amber
     }
 
+    private var warmupState: String {
+        guard let schedule = model.warmups[model.selectedID], schedule.enabled else { return "warm_disabled" }
+        switch schedule.lastStatus {
+        case "failed": return "warm_last_failed"
+        case "success": return "warm_last_sent"
+        case "running": return "warm_running"
+        case "skipped": return "warm_last_skipped"
+        default: return "warm_enabled"
+        }
+    }
+
     var body: some View {
         ZStack {
             Cockpit.background
-            RadialGradient(colors: [Cockpit.cyan.opacity(0.10), .clear], center: .topTrailing,
-                           startRadius: 0, endRadius: 610)
-            GridField()
+            LinearGradient(colors: [Cockpit.surface.opacity(0.25), .clear], startPoint: .topTrailing, endPoint: .bottomLeading)
             VStack(spacing: 0) {
                 header
                 Rectangle().fill(Cockpit.outline.opacity(0.68)).frame(height: 1)
@@ -402,6 +551,9 @@ private struct CockpitView: View {
         }
         .frame(minWidth: 760, minHeight: 520)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $model.showingWarmupSettings) {
+            WarmupSettingsView(model: model, key: model.selectedID)
+        }
     }
 
     private var header: some View {
@@ -504,9 +656,13 @@ private struct CockpitView: View {
                         .font(.system(size: 11, weight: .medium)).foregroundColor(Cockpit.muted)
                 }
                 HStack(alignment: .bottom, spacing: 16) {
+                    Text(model.selectedID.uppercased())
+                        .font(.system(size: 42, weight: .medium, design: .monospaced))
+                        .foregroundColor(Cockpit.cyan).frame(width: 48, alignment: .leading)
+                    Rectangle().fill(Cockpit.outline).frame(width: 1, height: 45)
                     VStack(alignment: .leading, spacing: 9) {
                         Text(model.selectedID.isEmpty ? model.t("choose_hint") : model.t("account") + " " + model.selectedID.uppercased())
-                            .font(.system(size: 31, weight: .semibold)).foregroundColor(Cockpit.ink)
+                            .font(.system(size: 21, weight: .semibold)).foregroundColor(Cockpit.ink)
                             .lineLimit(1).minimumScaleFactor(0.75)
                         HStack(spacing: 7) {
                             Circle().fill(model.selectedID == model.active ? Cockpit.cyan : Cockpit.amber).frame(width: 5, height: 5)
@@ -538,12 +694,30 @@ private struct CockpitView: View {
                         .lineLimit(1).minimumScaleFactor(0.75)
                 }
                 VStack(spacing: 18) {
-                    UsageMetric(title: model.t("five_hour_label"), value: model.selectedUsage?.fiveHour,
+                    UsageMetric(title: model.t("five_hour_label"), value: model.selectedUsage?.stale == true ? nil : model.selectedUsage?.fiveHour,
                                 stale: model.selectedUsage?.stale ?? false)
-                    UsageMetric(title: model.t("seven_day_label"), value: model.selectedUsage?.sevenDay,
+                    UsageMetric(title: model.t("seven_day_label"), value: model.selectedUsage?.stale == true ? nil : model.selectedUsage?.sevenDay,
                                 stale: model.selectedUsage?.stale ?? false)
                 }
                 .padding(.top, 18)
+                Rectangle().fill(Cockpit.outline.opacity(0.60)).frame(height: 1).padding(.top, 20)
+                HStack(spacing: 8) {
+                    Image(systemName: "clock").foregroundColor(Cockpit.cyan)
+                    Text(model.t("warm_title")).font(.system(size: 12, weight: .semibold)).foregroundColor(Cockpit.ink)
+                    Text(model.t(warmupState))
+                        .font(.system(size: 10)).foregroundColor(warmupState == "warm_last_failed" ? Cockpit.amber : Cockpit.muted)
+                    Spacer()
+                    Button(model.t("warm_settings")) {
+                        model.warmupInfo = [:]
+                        model.showingWarmupSettings = true
+                    }
+                    .buttonStyle(.plain).foregroundColor(Cockpit.cyan)
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .overlay(CutCorner(cut: 4).stroke(Cockpit.outline, lineWidth: 1))
+                    .disabled(model.selectedID.isEmpty || model.isBusy)
+                }
+                .padding(.top, 16)
                 Spacer(minLength: 0)
             }
             .padding(24)
@@ -566,6 +740,92 @@ private struct CockpitView: View {
     }
 }
 
+private struct WarmupSettingsView: View {
+    @ObservedObject var model: AccountModel
+    let key: String
+    @State private var enabled: Bool
+    @State private var clock: Date
+
+    init(model: AccountModel, key: String) {
+        self.model = model
+        self.key = key
+        let schedule = model.warmups[key]
+        _enabled = State(initialValue: schedule?.enabled ?? false)
+        _clock = State(initialValue: Calendar.current.date(bySettingHour: schedule?.hour ?? 9,
+                                                             minute: schedule?.minute ?? 0,
+                                                             second: 0, of: Date()) ?? Date())
+    }
+
+    private var bound: Bool { model.warmupInfo["bound"] as? Bool == true }
+    private var infoText: String {
+        if let email = model.warmupInfo["email"] as? String {
+            return String(format: model.t(bound ? "warm_connected" : "warm_signed_in"), email)
+        }
+        if let code = model.warmupInfo["identity_error"] as? String { return model.t(code) }
+        return model.t("warm_checking")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.t("warm_title")).font(.system(size: 21, weight: .semibold)).foregroundColor(Cockpit.ink)
+                    Text(String(format: model.t("warm_account"), key.uppercased()))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundColor(Cockpit.muted)
+                }
+                Spacer()
+                Button(action: { model.showingWarmupSettings = false }) {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
+                }.buttonStyle(.plain).foregroundColor(Cockpit.muted)
+            }
+            Rectangle().fill(Cockpit.outline).frame(height: 1)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(model.t("warm_cli")).font(.system(size: 12, weight: .semibold)).foregroundColor(Cockpit.ink)
+                Text(infoText).font(.system(size: 11)).foregroundColor(bound ? Cockpit.muted : Cockpit.amber)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button(model.t(model.warmupInfo["cli_available"] as? Bool == false ? "warm_install" : "warm_login")) {
+                        model.openWarmupLogin(key)
+                    }
+                    Button(model.t("warm_refresh")) { model.loadWarmupInfo(key) }
+                    if model.warmupInfo["email"] is String && !bound {
+                        Button(model.t("warm_confirm")) { model.bindWarmup(key) }.tint(Cockpit.cyan)
+                    }
+                }.disabled(model.isWarmupBusy)
+            }
+            Rectangle().fill(Cockpit.outline.opacity(0.7)).frame(height: 1)
+            HStack {
+                Toggle(model.t("warm_enable"), isOn: $enabled)
+                    .disabled(model.isWarmupBusy || (!bound && !enabled))
+                Spacer()
+                DatePicker("", selection: $clock, displayedComponents: .hourAndMinute)
+                    .labelsHidden().disabled(!enabled || model.isWarmupBusy)
+            }.font(.system(size: 12)).foregroundColor(Cockpit.ink)
+            Text(model.t("warm_note"))
+                .font(.system(size: 11)).foregroundColor(Cockpit.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            HStack {
+                Button(model.t("warm_send_now")) { model.runWarmup(key) }
+                    .disabled(!bound || model.isWarmupBusy)
+                Spacer()
+                Button(model.t("cancel")) { model.showingWarmupSettings = false }
+                Button(model.t("warm_save")) {
+                    let parts = Calendar.current.dateComponents([.hour, .minute], from: clock)
+                    model.saveWarmup(key, enabled: enabled, hour: parts.hour ?? 9, minute: parts.minute ?? 0)
+                }
+                .disabled(model.isWarmupBusy || (enabled && !bound))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 550, height: 460)
+        .background(Cockpit.background)
+        .preferredColorScheme(.dark)
+        .onAppear { model.loadWarmupInfo(key) }
+    }
+}
+
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private let model = AccountModel()
@@ -578,7 +838,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = model.t("title")
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.backgroundColor = NSColor(red: 0.035, green: 0.049, blue: 0.068, alpha: 1)
+        window.backgroundColor = NSColor(red: 20/255, green: 20/255, blue: 19/255, alpha: 1)
         window.appearance = NSAppearance(named: .darkAqua)
         window.minSize = NSSize(width: 760, height: 520)
         window.contentView = NSHostingView(rootView: CockpitView(model: model))
