@@ -72,7 +72,7 @@ enum DesktopUsage {
     // V2 keys bind a token to both an account and organization. Never fall back
     // to a token from another account, even if it has a longer lifetime.
     static func matchingToken(_ cache: [String: Any], account: String, organization: String,
-                              now: TimeInterval) -> String? {
+                              now: TimeInterval, requiredScopes: Set<String> = ["user:profile"]) -> String? {
         let pattern = "^acct:([0-9A-Fa-f-]+)\\|([^:]+):([0-9A-Fa-f-]+):https://api\\.anthropic\\.com:(.+)$"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         var candidates: [(String, Int, Double)] = []
@@ -90,7 +90,7 @@ enum DesktopUsage {
                   CFGetTypeID(expires) != CFBooleanGetTypeID() else { continue }
             let scopes = name[s].split(whereSeparator: { $0.isWhitespace }).map(String.init)
             let expiry = expires.doubleValue > 100_000_000_000 ? expires.doubleValue / 1000 : expires.doubleValue
-            guard scopes.contains("user:profile"), expiry.isFinite, expiry > now + 60 else { continue }
+            guard requiredScopes.isSubset(of: Set(scopes)), expiry.isFinite, expiry > now + 120 else { continue }
             candidates.append((token, scopes.count, expiry))
         }
         return candidates.sorted { left, right in
@@ -174,7 +174,7 @@ enum DesktopUsage {
         request.httpMethod = "GET"
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("Claude-Account-Switcher/0.4.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("Claude-Account-Switcher/0.5.0", forHTTPHeaderField: "User-Agent")
         let done = DispatchSemaphore(value: 0)
         var responseData: Data?
         var response: HTTPURLResponse?
@@ -197,7 +197,7 @@ enum DesktopUsage {
         return data
     }
 
-    static func run() {
+    static func run(warmup: Bool = false, checkOnly: Bool = false) {
         do {
             let input = FileHandle.standardInput.readDataToEndOfFile()
             guard input.count <= 16_384,
@@ -211,7 +211,20 @@ enum DesktopUsage {
             defer { password.resetBytes(in: 0..<password.count) }
             let cache = try decryptCache(encoded, password: password)
             guard let token = matchingToken(cache, account: account, organization: organization,
-                                            now: Date().timeIntervalSince1970) else { throw Failure(code: "usage_expired") }
+                                            now: Date().timeIntervalSince1970,
+                                            requiredScopes: warmup ? ["user:inference"] : ["user:profile"]) else {
+                throw Failure(code: "usage_expired")
+            }
+            if warmup {
+                let cli = try DesktopWarmup.cli(in: profile)
+                if checkOnly {
+                    write(["ok": true, "ready": true])
+                    return
+                }
+                try DesktopWarmup.execute(cli: cli, token: token)
+                write(["ok": true, "sent": true])
+                return
+            }
             let data = try fetchUsage(token: token)
             guard let result = parseUsage(data, now: Date().timeIntervalSince1970) else {
                 throw Failure(code: "usage_unavailable")
@@ -229,6 +242,95 @@ enum DesktopUsage {
     private static func write(_ output: [String: Any]) {
         if let data = try? JSONSerialization.data(withJSONObject: output) {
             FileHandle.standardOutput.write(data)
+        }
+    }
+}
+
+// Run the official runtime already downloaded by Desktop. The selected account's
+// access token stays in this helper and the CLI's ephemeral environment only.
+enum DesktopWarmup {
+    static func cli(in profile: String) throws -> URL {
+        let root = URL(fileURLWithPath: profile).appendingPathComponent("claude-code")
+        let manager = FileManager.default
+        guard let available = try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
+            throw DesktopUsage.Failure(code: "warm_error_runtime")
+        }
+        let versions = available
+            .filter { $0.lastPathComponent.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil }
+            .sorted { $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending }
+        for version in versions {
+            guard let builds = try? manager.contentsOfDirectory(at: version, includingPropertiesForKeys: nil) else { continue }
+            for build in builds.sorted(by: { $0.path < $1.path }) {
+                let executable = build.appendingPathComponent("claude.app/Contents/MacOS/claude")
+                let resolved = executable.resolvingSymlinksInPath()
+                if resolved.path.hasPrefix(root.resolvingSymlinksInPath().path + "/"),
+                   manager.isExecutableFile(atPath: resolved.path) { return resolved }
+            }
+        }
+        throw DesktopUsage.Failure(code: "warm_error_runtime")
+    }
+
+    static func environment(token: String, directory: URL, inherited: [String: String]) -> [String: String] {
+        let allowed = ["HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                       "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE"]
+        var result = inherited.filter { allowed.contains($0.key) }
+        result["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        result["CLAUDE_CONFIG_DIR"] = directory.path
+        result["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        result["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        result["CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL"] = "1"
+        result["CLAUDE_CODE_MAX_RETRIES"] = "0"
+        return result
+    }
+
+    static func execute(cli: URL, token: String, timeout: TimeInterval = 90) throws {
+        let manager = FileManager.default
+        let directory = manager.temporaryDirectory.appendingPathComponent("claude-warmup-" + UUID().uuidString)
+        try manager.createDirectory(at: directory, withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+        defer { try? manager.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("result.json")
+        guard manager.createFile(atPath: output.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw DesktopUsage.Failure(code: "warm_error_failed")
+        }
+        let handle = try FileHandle(forWritingTo: output)
+        defer { try? handle.close() }
+        let process = Process()
+        process.executableURL = cli
+        process.arguments = ["-p", "--safe-mode", "--tools", "", "--disallowed-tools", "*",
+                             "--strict-mcp-config", "--model", "haiku", "--max-turns", "1",
+                             "--no-session-persistence", "--output-format", "json",
+                             "--system-prompt", "Reply only with OK.", "Reply OK."]
+        process.environment = environment(token: token, directory: directory, inherited: ProcessInfo.processInfo.environment)
+        process.currentDirectoryURL = directory
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = handle
+        process.standardError = FileHandle.nullDevice
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        try process.run()
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            if finished.wait(timeout: .now() + 2) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
+            throw DesktopUsage.Failure(code: "warm_error_timeout")
+        }
+        let attributes = try manager.attributesOfItem(atPath: output.path)
+        guard let size = attributes[.size] as? NSNumber, size.intValue <= 1_000_000 else {
+            throw DesktopUsage.Failure(code: "warm_error_failed")
+        }
+        let data = try Data(contentsOf: output)
+        guard process.terminationStatus == 0,
+              let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              result["type"] as? String == "result", result["subtype"] as? String == "success",
+              result["is_error"] as? Bool != true else {
+            let message = String(data: data, encoding: .utf8)?.lowercased() ?? ""
+            let code = message.contains("401") || message.contains("authentication") || message.contains("not logged in")
+                ? "usage_expired"
+                : message.contains("limit") || message.contains("429") ? "warm_error_limited" : "warm_error_failed"
+            throw DesktopUsage.Failure(code: code)
         }
     }
 }

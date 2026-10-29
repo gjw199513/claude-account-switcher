@@ -6,3 +6,24 @@ __pycache__/
 .env.*
 *.log
 build/
+
+# Local logins, account data, transcripts, and generated applications
+.claude/
+.claude.json
+.credentials.json
+auth.json
+config.json
+usage-state.json
+sync-state.json
+desktop-warmup.json
+warmup.json
+plan-usage-history.json
+warmup-cli/
+cli-runtime/
+app-backups/
+claude-code-sessions/
+*-login-*.command
+*.jsonl
+*.app/
+*.key
+*.pem

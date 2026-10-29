@@ -16,8 +16,6 @@ import json
 import math
 import os
 import re
-import shlex
-import shutil
 import signal
 import stat
 import subprocess
@@ -54,6 +52,12 @@ class Problem(Exception):
 
 class Stopped(Problem):
     pass
+
+
+class WarmupProblem(Problem):
+    def __init__(self, code: str):
+        super().__init__('预热未完成，请查看账号状态后重试。')
+        self.code = code
 
 
 def discover_profiles() -> dict[str, Path]:
@@ -498,278 +502,8 @@ def sync(source_key: str | None, both_stopped: bool = False) -> dict[str, Any]:
     return result
 
 
-@contextlib.contextmanager
-def warmup_locked() -> Iterator[None]:
-    """Serialize settings and daily claims without blocking session synchronization."""
-    private_dir(STATE)
-    fd = os.open(STATE / 'warmup.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        os.close(fd)
-
-
-def warmup_config() -> dict[str, Any]:
-    data = load_state('warmup.json')
-    profiles = data.get('profiles')
-    if data.get('version') != 1 or not isinstance(profiles, dict):
-        return {'version': 1, 'profiles': {}}
-    return {'version': 1, 'profiles': profiles, 'last_tick_at': data.get('last_tick_at')}
-
-
-def warmup_profile(data: dict[str, Any], key: str) -> dict[str, Any]:
-    value = data['profiles'].get(key)
-    return dict(value) if isinstance(value, dict) else {}
-
-
-def warmup_cli() -> str | None:
-    candidates = [STATE / 'cli-runtime/node_modules/.bin/claude', Path.home() / '.local/bin/claude',
-                  Path('/opt/homebrew/bin/claude'), Path('/usr/local/bin/claude')]
-    candidates.extend(sorted((Path.home() / '.nvm/versions/node').glob('*/bin/claude'), reverse=True))
-    discovered = shutil.which('claude')
-    if discovered:
-        candidates.append(Path(discovered))
-    return next((str(p) for p in candidates if p.is_file() and os.access(p, os.X_OK)), None)
-
-
-def warmup_env(key: str) -> dict[str, str]:
-    if key not in DATA:
-        raise Problem('未知账号。')
-    private_dir(STATE / 'warmup-cli')
-    directory = STATE / 'warmup-cli' / key
-    private_dir(directory)
-    env = {name: os.environ[name] for name in ('HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'TERM', 'COLORTERM',
-           'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy',
-           'all_proxy', 'no_proxy') if name in os.environ}
-    env.update({'HOME': str(Path.home()), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
-                'CLAUDE_CONFIG_DIR': str(directory), 'DISABLE_AUTOUPDATER': '1'})
-    return env
-
-
-def warmup_identity(key: str) -> dict[str, str]:
-    """Ask the unmodified CLI for non-secret identity metadata, never for tokens."""
-    cli = warmup_cli()
-    if not cli:
-        raise Problem('预热需要安装 Claude Code CLI。')
-    if key not in DATA:
-        raise Problem('未知账号。')
-    folder = session_dir(DATA[key])
-    account = account_id(DATA[key])
-    if folder is None or account is None:
-        raise Problem('请先在 Claude Desktop 中登录并打开该账号的 Code。')
-    env = warmup_env(key)
-    try:
-        result = subprocess.run([cli, 'auth', 'status'], env=env, cwd=str(STATE),
-                                capture_output=True, text=True, timeout=15, check=False)
-        payload = json.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
-        raise Problem('无法读取 Claude Code 的登录状态。')
-    if not isinstance(payload, dict) or result.returncode != 0 or payload.get('loggedIn') is not True:
-        raise Problem('请先登录该账号的 Claude Code CLI。')
-    if payload.get('authMethod') != 'claude.ai' or payload.get('apiProvider') != 'firstParty':
-        raise Problem('预热只支持通过 Claude 订阅登录的官方 CLI。')
-    if payload.get('configDirectory') != env['CLAUDE_CONFIG_DIR']:
-        raise Problem('Claude Code 未提供可确认的账号信息。')
-    email, org = payload.get('email'), payload.get('orgId')
-    if not isinstance(email, str) or not email.strip() or not isinstance(org, str) or not UUID_ONLY.fullmatch(org):
-        raise Problem('Claude Code 未提供可确认的账号信息。')
-    if org.lower() != folder.name.lower():
-        raise Problem('CLI 登录的组织与所选桌面账号不一致。')
-    return {'email': email.strip(), 'org': org.lower(), 'account': account.lower(), 'cli': cli}
-
-
-def identity_fingerprint(identity: dict[str, str]) -> str:
-    value = '\0'.join(identity[k].lower() for k in ('email', 'org', 'account'))
-    return hashlib.sha256(value.encode('utf-8')).hexdigest()
-
-
 def profile_fingerprint(account: str, org: str) -> str:
     return hashlib.sha256((account.lower() + '\0' + org.lower()).encode('utf-8')).hexdigest()
-
-
-def warmup_info(key: str) -> dict[str, Any]:
-    if key not in DATA:
-        raise Problem('未知账号。')
-    result: dict[str, Any] = {'cli_available': warmup_cli() is not None, 'email': None, 'identity_error': None,
-                              'bound': False}
-    try:
-        identity = warmup_identity(key)
-        result['email'] = identity['email']
-        result['bound'] = warmup_profile(warmup_config(), key).get('binding') == identity_fingerprint(identity)
-    except Problem as exc:
-        result['identity_error'] = error_code(str(exc))
-    return result
-
-
-def warmup_login_command(key: str) -> dict[str, Any]:
-    cli = warmup_cli()
-    if not cli:
-        raise Problem('预热需要安装 Claude Code CLI。')
-    env = warmup_env(key)
-    # The official binary manages its own credentials; the switcher never reads them.
-    forwarded = ('HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'TERM', 'COLORTERM', 'TERM_PROGRAM', 'HTTP_PROXY', 'HTTPS_PROXY',
-                 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')
-    exports = ' '.join(f'{name}="${{{name}:-}}"' for name in forwarded)
-    fixed = ' PATH=/usr/bin:/bin:/usr/sbin:/sbin DISABLE_AUTOUPDATER=1 CLAUDE_CONFIG_DIR='
-    content = '#!/bin/bash\n/usr/bin/env -i ' + exports + fixed + shlex.quote(env['CLAUDE_CONFIG_DIR'])
-    content += ' ' + shlex.quote(cli) + ' auth login\n'
-    content += "printf '\\n%s\\n' 'Return to Claude Account Switcher after login.'\n"
-    path = STATE / ('warmup-login-' + key + '.command')
-    prior = read_regular(path) if path.exists() else None
-    atomic_write(path, content.encode(), prior)
-    path.chmod(0o700)
-    return {'login_command': str(path)}
-
-
-def warmup_bind(key: str) -> dict[str, Any]:
-    identity = warmup_identity(key)
-    with warmup_locked():
-        data = warmup_config()
-        record = warmup_profile(data, key)
-        binding = identity_fingerprint(identity)
-        if record.get('binding') != binding:
-            record.pop('usage', None)
-        record['binding'] = binding
-        record['profile'] = profile_fingerprint(identity['account'], identity['org'])
-        # A newly confirmed identity starts with scheduling turned off.
-        record['enabled'] = False
-        data['profiles'][key] = record
-        save_state('warmup.json', data)
-    return {'bound': True}
-
-
-def warmup_save(key: str, enabled: bool, hour: int, minute: int,
-                now: datetime.datetime | None = None) -> dict[str, Any]:
-    if key not in DATA or type(hour) is not int or type(minute) is not int or not (0 <= hour <= 23 and 0 <= minute <= 59):
-        raise Problem('预热时间不正确。')
-    with warmup_locked():
-        data = warmup_config()
-        record = warmup_profile(data, key)
-        if enabled and not record.get('binding'):
-            raise Problem('请先确认预热账号。')
-        if (record.get('enabled') is not enabled or record.get('hour') != hour or record.get('minute') != minute):
-            record['enabled_at'] = (now or datetime.datetime.now()).timestamp()
-            record.pop('missed_date', None)
-        record.update({'enabled': enabled, 'hour': hour, 'minute': minute})
-        data['profiles'][key] = record
-        save_state('warmup.json', data)
-    return {'saved': True}
-
-
-def warmup_due(record: dict[str, Any], now: datetime.datetime) -> float | None:
-    hour, minute = record.get('hour'), record.get('minute')
-    if (record.get('enabled') is not True or not record.get('binding') or
-            type(hour) is not int or type(minute) is not int or not (0 <= hour <= 23 and 0 <= minute <= 59) or
-            record.get('last_date') == now.date().isoformat()):
-        return None
-    scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    seconds = (now - scheduled).total_seconds()
-    return seconds if seconds >= 0 else None
-
-
-def warmup_public(now: datetime.datetime | None = None) -> dict[str, dict[str, Any]]:
-    now = now or datetime.datetime.now()
-    data = warmup_config()
-    result = {}
-    for key in DATA:
-        record = warmup_profile(data, key)
-        due = warmup_due(record, now)
-        result[key] = {'enabled': record.get('enabled') is True, 'hour': record.get('hour', 9),
-                       'minute': record.get('minute', 0), 'bound': bool(record.get('binding')),
-                       'last_status': record.get('last_status'),
-                       'pending': due is not None and (due > 90 or record.get('missed_date') == now.date().isoformat())}
-    return result
-
-
-def warmup_execute(key: str, reason: str, now: datetime.datetime | None = None) -> dict[str, Any]:
-    now = now or datetime.datetime.now()
-    today = now.date().isoformat()
-    if key not in DATA or reason not in ('scheduled', 'manual', 'catchup'):
-        raise Problem('未知账号。')
-    with warmup_locked():
-        data = warmup_config()
-        record = warmup_profile(data, key)
-        if not record.get('binding'):
-            raise Problem('请先确认预热账号。')
-        if record.get('last_status') == 'running' and record.get('last_date') == today:
-            started = record.get('started_at')
-            if not isinstance(started, (int, float)) or time.time() - started < 180:
-                raise Problem('预热正在进行。')
-        if reason != 'manual':
-            due = warmup_due(record, now)
-            missed = due is not None and (due > 90 or record.get('missed_date') == today)
-            if due is None or (reason == 'scheduled' and missed) or (reason == 'catchup' and not missed):
-                raise Problem('当前没有需要执行的预热。')
-        record.update({'last_date': today, 'last_status': 'running', 'started_at': time.time()})
-        data['profiles'][key] = record
-        save_state('warmup.json', data)
-    success = False
-    usage: dict[str, Any] | None = None
-    try:
-        identity = warmup_identity(key)
-        if identity_fingerprint(identity) != record['binding']:
-            raise Problem('CLI 登录账号发生变化，请重新确认。')
-        with warmup_locked():
-            current = warmup_profile(warmup_config(), key)
-            if (current.get('binding') != record.get('binding') or
-                    (reason != 'manual' and current.get('enabled') is not True)):
-                raise Problem('预热设置已更改，请重新操作。')
-        command = [identity['cli'], '-p', '--safe-mode', '--tools', '', '--disallowed-tools', '*',
-                   '--strict-mcp-config', '--model', 'haiku', '--max-turns', '1',
-                   '--no-session-persistence', '--output-format', 'stream-json', '--verbose', '--system-prompt',
-                   'Reply only with OK.', 'Reply OK.']
-        completed = subprocess.run(command, env=warmup_env(key), cwd=str(STATE),
-                                   capture_output=True, text=True, timeout=120, check=False)
-        usage, completed_ok = parse_warmup_stream(completed.stdout)
-        success = completed.returncode == 0 and completed_ok
-    finally:
-        with warmup_locked():
-            data = warmup_config()
-            current = warmup_profile(data, key)
-            if current.get('last_date') == today and current.get('last_status') == 'running':
-                current['last_status'] = 'success' if success else 'failed'
-                if success and usage is not None and current.get('binding') == record.get('binding'):
-                    current['usage'] = usage
-                data['profiles'][key] = current
-                save_state('warmup.json', data)
-    return {'sent': success, 'result': 'success' if success else 'failed'}
-
-
-def parse_warmup_stream(stdout: str, now: float | None = None) -> tuple[dict[str, Any] | None, bool]:
-    """Keep only utilization from a CLI event, never prompts, replies, or credentials."""
-    observation: dict[str, Any] | None = None
-    success = False
-    for line in stdout.splitlines():
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        if event.get('type') == 'result':
-            success = event.get('is_error') is False
-        if event.get('type') != 'rate_limit_event':
-            continue
-        info = event.get('rate_limit_info')
-        windows = info.get('unifiedWindows') if isinstance(info, dict) else None
-        if not isinstance(windows, dict):
-            continue
-        values: dict[str, float | None] = {}
-        for source, target in (('five_hour', 'five_hour'), ('seven_day', 'seven_day')):
-            window = windows.get(source)
-            value = window.get('utilization') if isinstance(window, dict) else None
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                values[target] = None
-            else:
-                try:
-                    number = float(value)
-                    values[target] = number * 100 if math.isfinite(number) and 0 <= number <= 1 else None
-                except OverflowError:
-                    values[target] = None
-        if values['five_hour'] is not None or values['seven_day'] is not None:
-            observation = {**values, 'observed_at': time.time() if now is None else now}
-    return observation, success
 
 
 def saved_usage(usage: Any, now: float | None = None) -> dict[str, Any] | None:
@@ -787,7 +521,7 @@ def saved_usage(usage: Any, now: float | None = None) -> dict[str, Any] | None:
         return None
     if observed <= 0 or observed > current + 300:
         return None
-    values = {}
+    values: dict[str, Any] = {}
     for name in ('five_hour', 'seven_day'):
         number = usage.get(name)
         if isinstance(number, bool) or not isinstance(number, (int, float)):
@@ -801,24 +535,16 @@ def saved_usage(usage: Any, now: float | None = None) -> dict[str, Any] | None:
         reset = usage.get(name + '_reset_at')
         if isinstance(reset, (int, float)) and not isinstance(reset, bool):
             try:
-                if math.isfinite(float(reset)) and current >= float(reset):
-                    values[name] = None
+                reset_at = float(reset)
+                if math.isfinite(reset_at) and 0 < reset_at < current + 366 * 86400:
+                    values[name + '_reset_at'] = reset_at
+                    if current >= reset_at:
+                        values[name] = None
             except OverflowError:
                 values[name] = None
     if all(value is None for value in values.values()):
         return None
     return {**values, 'observed_at': observed, 'stale': current - observed > 30 * 60}
-
-
-def read_warmup_usage(key: str, profile: Path, session_folder: Path | None,
-                      now: float | None = None) -> dict[str, Any] | None:
-    if session_folder is None:
-        return None
-    account = account_id(profile)
-    record = warmup_profile(warmup_config(), key)
-    if account is None or record.get('profile') != profile_fingerprint(account, session_folder.name):
-        return None
-    return saved_usage(record.get('usage'), now)
 
 
 def usage_config() -> dict[str, Any]:
@@ -960,7 +686,7 @@ def usage_due(record: dict[str, Any], now: float) -> bool:
     if isinstance(retry_at, (int, float)) and not isinstance(retry_at, bool) and now < retry_at:
         return False
     return (not isinstance(attempt, (int, float)) or isinstance(attempt, bool) or
-            now < attempt or now - attempt >= 900)
+            now < attempt or now - attempt >= 300)
 
 
 def usage_needs_check(key: str, data: dict[str, Any], now: float) -> bool:
@@ -1004,50 +730,194 @@ def schedule_usage_tick() -> None:
             pass
 
 
-def warmup_dismiss(key: str, now: datetime.datetime | None = None) -> dict[str, Any]:
-    now = now or datetime.datetime.now()
-    with warmup_locked():
-        data = warmup_config()
-        record = warmup_profile(data, key)
-        due = warmup_due(record, now)
-        if due is not None and (due > 90 or record.get('missed_date') == now.date().isoformat()):
-            record.update({'last_date': now.date().isoformat(), 'last_status': 'skipped'})
-            data['profiles'][key] = record
-            save_state('warmup.json', data)
-    return {'dismissed': True}
+def warmup_config() -> dict[str, Any]:
+    # Deliberately do not reactivate schedules from the removed CLI-login flow.
+    data = load_state('desktop-warmup.json')
+    if data.get('version') != 2 or not isinstance(data.get('profiles'), dict):
+        return {'version': 2, 'profiles': {}}
+    return data
 
 
-def warmup_tick(now: datetime.datetime | None = None) -> None:
-    now = now or datetime.datetime.now()
-    current = now.timestamp()
-    due_keys = []
-    with warmup_locked():
-        data = warmup_config()
-        previous = data.get('last_tick_at')
-        for key in DATA:
-            record = warmup_profile(data, key)
-            due = warmup_due(record, now)
-            if due is None:
-                continue
-            scheduled = current - due
-            enabled_at = record.get('enabled_at')
-            active_at_schedule = (isinstance(previous, (int, float)) and not isinstance(previous, bool) and
-                                  scheduled - 45 <= previous < scheduled and current - previous <= 60 and
-                                  isinstance(enabled_at, (int, float)) and not isinstance(enabled_at, bool) and
-                                  enabled_at <= scheduled)
-            if due <= 90 and active_at_schedule and record.get('missed_date') != now.date().isoformat():
-                due_keys.append(key)
-            else:
-                record['missed_date'] = now.date().isoformat()
-                data['profiles'][key] = record
-        data['last_tick_at'] = current
-        save_state('warmup.json', data)
-    for key in due_keys:
+@contextlib.contextmanager
+def warmup_locked() -> Iterator[None]:
+    private_dir(STATE)
+    fd = os.open(STATE / 'desktop-warmup.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
         try:
-            warmup_execute(key, 'scheduled', now)
-        except (Problem, OSError, subprocess.SubprocessError):
-            # A failed attempt is recorded; never retry automatically that day.
-            continue
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise WarmupProblem('warm_error_busy') from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def warmup_record(data: dict[str, Any], key: str) -> dict[str, Any]:
+    value = data['profiles'].get(key)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def warmup_context(key: str) -> tuple[Path, str, str]:
+    if key not in DATA:
+        raise WarmupProblem('warm_error_account')
+    profile = DATA[key]
+    account, folder = account_id(profile), session_dir(profile)
+    if account is None or folder is None:
+        raise WarmupProblem('warm_error_account')
+    return profile, account, folder.name
+
+
+def warmup_clock(record: dict[str, Any], now: datetime.datetime) -> datetime.datetime | None:
+    hour, minute = record.get('hour', 9), record.get('minute', 0)
+    if type(hour) is not int or type(minute) is not int or not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def warmup_decision(record: dict[str, Any], now: datetime.datetime) -> str | None:
+    if record.get('enabled') is not True:
+        return None
+    scheduled = warmup_clock(record, now)
+    if scheduled is None:
+        return None
+    stamp = scheduled.timestamp()
+    enabled_at = record.get('enabled_at', float('inf'))
+    if not isinstance(enabled_at, (int, float)) or isinstance(enabled_at, bool) or stamp < enabled_at:
+        return None
+    run_key = scheduled.isoformat()
+    if now < scheduled or record.get('scheduled_key') == run_key:
+        return None
+    return 'due' if (now - scheduled).total_seconds() <= 90 else 'missed'
+
+
+def warmup_save(key: str, enabled: bool, hour: int, minute: int,
+                now: datetime.datetime | None = None) -> dict[str, Any]:
+    if type(hour) is not int or type(minute) is not int or not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise WarmupProblem('warm_error_time')
+    _, account, organization = warmup_context(key)
+    current = now or datetime.datetime.now().astimezone()
+    with warmup_locked():
+        data = warmup_config()
+        record = warmup_record(data, key)
+        record.update({'enabled': enabled, 'hour': hour, 'minute': minute,
+                       'enabled_at': current.timestamp(), 'profile': profile_fingerprint(account, organization)})
+        data['profiles'][key] = record
+        save_state('desktop-warmup.json', data)
+    return {'saved': True}
+
+
+def warmup_public(now: datetime.datetime | None = None) -> dict[str, dict[str, Any]]:
+    current = now or datetime.datetime.now().astimezone()
+    data = warmup_config()
+    result = {}
+    for key in DATA:
+        record = warmup_record(data, key)
+        try:
+            _, account, organization = warmup_context(key)
+            matches = record.get('profile') == profile_fingerprint(account, organization)
+        except (Problem, OSError):
+            matches = False
+        enabled = matches and record.get('enabled') is True
+        scheduled = warmup_clock(record, current)
+        if scheduled is not None and (scheduled <= current or scheduled.timestamp() < record.get('enabled_at', 0)):
+            scheduled += datetime.timedelta(days=1)
+        result[key] = {'enabled': enabled, 'hour': record.get('hour', 9), 'minute': record.get('minute', 0),
+                       'next_at': scheduled.timestamp() if enabled and scheduled else None,
+                       'last_status': record.get('last_status') if matches else None,
+                       'last_at': record.get('last_at') if matches else None,
+                       'last_error': record.get('last_error') if matches else None}
+    return result
+
+
+def warmup_execute(key: str, scheduled: bool = False, allow_prompt: bool = False,
+                   now: datetime.datetime | None = None) -> dict[str, Any]:
+    current = now or datetime.datetime.now().astimezone()
+    stamp = current.timestamp()
+    profile, account, organization = warmup_context(key)
+    fingerprint = profile_fingerprint(account, organization)
+    with warmup_locked():
+        data = warmup_config()
+        record = warmup_record(data, key)
+        if scheduled and (record.get('profile') != fingerprint or warmup_decision(record, current) != 'due'):
+            return {'sent': False, 'reason': 'not_due'}
+        last = record.get('started_at', 0)
+        if isinstance(last, (int, float)) and stamp - last < (120 if record.get('last_status') == 'running' else 60):
+            raise WarmupProblem('warm_error_busy')
+        if record.get('profile') != fingerprint:
+            record['enabled'] = False
+        record.update({'profile': fingerprint, 'started_at': stamp, 'last_status': 'running', 'last_error': None})
+        if scheduled:
+            clock = warmup_clock(record, current)
+            record['scheduled_key'] = clock.isoformat() if clock else None
+        data['profiles'][key] = record
+        save_state('desktop-warmup.json', data)
+    failure: str | None = 'warm_error_failed'
+    try:
+        folder = session_dir(profile)
+        usage = read_desktop_usage(key, profile, folder, now=stamp)
+        if usage and not usage['stale'] and any(usage.get(name) == 100 for name in ('five_hour', 'seven_day')):
+            raise WarmupProblem('warm_error_limited')
+        payload = {'profile': str(profile), 'account': account, 'organization': organization,
+                   'allow_prompt': allow_prompt and not scheduled}
+        completed = subprocess.run([str(USAGE_PROBE), '--desktop-warmup-probe'], input=json.dumps(payload),
+                                   capture_output=True, text=True, timeout=100, check=False)
+        try:
+            response = json.loads(completed.stdout)
+        except ValueError:
+            response = None
+        if completed.returncode != 0 or not isinstance(response, dict) or response.get('ok') is not True or response.get('sent') is not True:
+            code = response.get('error_code') if isinstance(response, dict) else None
+            accepted = {'usage_keychain', 'usage_storage', 'usage_expired', 'warm_error_runtime',
+                        'warm_error_failed', 'warm_error_timeout', 'warm_error_limited'}
+            raise WarmupProblem(code if isinstance(code, str) and code in accepted else 'warm_error_failed')
+        failure = None
+        return {'sent': True}
+    except WarmupProblem as exc:
+        failure = exc.code
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        failure = 'warm_error_timeout' if isinstance(exc, subprocess.TimeoutExpired) else 'warm_error_failed'
+        raise WarmupProblem(failure) from exc
+    finally:
+        with warmup_locked():
+            data = warmup_config()
+            record = warmup_record(data, key)
+            if record.get('started_at') == stamp:
+                record.update({'last_status': 'sent' if failure is None else 'failed',
+                               'last_error': failure, 'last_at': stamp})
+                data['profiles'][key] = record
+                save_state('desktop-warmup.json', data)
+
+
+def schedule_warmup_tick(now: datetime.datetime | None = None) -> None:
+    current = now or datetime.datetime.now().astimezone()
+    due = []
+    with warmup_locked():
+        data = warmup_config()
+        changed = False
+        for key in DATA:
+            record = warmup_record(data, key)
+            try:
+                _, account, organization = warmup_context(key)
+            except (Problem, OSError):
+                continue
+            if record.get('profile') != profile_fingerprint(account, organization):
+                continue
+            decision = warmup_decision(record, current)
+            if decision == 'due':
+                due.append(key)
+            elif decision == 'missed':
+                clock = warmup_clock(record, current)
+                record.update({'scheduled_key': clock.isoformat() if clock else None,
+                               'last_status': 'missed', 'last_at': current.timestamp(), 'last_error': None})
+                data['profiles'][key] = record
+                changed = True
+        if changed:
+            save_state('desktop-warmup.json', data)
+    for key in due:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'warmup-run', key, '--scheduled'],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
 
 
 def read_usage(profile: Path, session_folder: Path | None, now: float | None = None) -> dict[str, Any] | None:
@@ -1132,15 +1002,28 @@ def status() -> dict[str, Any]:
     profiles = []
     usage_state = usage_config()
     for key, root in DATA.items():
-        observations = [read_usage(root, found_paths[key]), read_warmup_usage(key, root, found_paths[key]),
+        observations = [read_usage(root, found_paths[key]),
                         read_desktop_usage(key, root, found_paths[key])]
         usable = [item for item in observations if item is not None]
+        usage = None
+        if usable:
+            latest = max(usable, key=lambda item: item['observed_at'])
+            combined = dict(latest)
+            # A newer Desktop history sample can update the percentage without
+            # repeating the API's reset timestamps. Carry those within the same
+            # window, then invalidate percentages whose reset has passed.
+            for observation in sorted(usable, key=lambda item: item['observed_at']):
+                for name in ('five_hour_reset_at', 'seven_day_reset_at'):
+                    reset = observation.get(name)
+                    if isinstance(reset, (int, float)) and reset > latest['observed_at']:
+                        combined[name] = reset
+            usage = saved_usage(combined)
         folder = found_paths[key]
         account = account_id(root) if folder is not None else None
         entry = usage_profile(usage_state, key)
         error = entry.get('last_error') if folder is not None and account is not None and entry.get('profile') == profile_fingerprint(account, folder.name) else None
         profiles.append({'id': key, 'configured': folders[key], 'active': key in active.values(),
-                         'usage': max(usable, key=lambda item: item['observed_at']) if usable else None,
+                         'usage': usage,
                          'usage_error': error})
     return {'active': next(iter(active.values())) if len(active) == 1 else ('none' if not active else 'many'),
             'busy': busy, 'profiles': profiles, 'configured': folders,
@@ -1224,20 +1107,8 @@ def error_code(message: str) -> str:
         return 'usage_limited'
     if '用量暂时不可用' in message:
         return 'usage_unavailable'
-    if '预热需要安装' in message:
-        return 'warm_error_cli_missing'
-    if '登录该账号的 Claude Code CLI' in message:
-        return 'warm_error_login'
-    if '组织与所选桌面账号不一致' in message or '登录账号发生变化' in message:
-        return 'warm_error_mismatch'
-    if '可确认的账号信息' in message or '订阅登录的官方 CLI' in message:
-        return 'warm_error_identity'
-    if '桌面账号' in message or 'Desktop 中登录' in message:
-        return 'warm_error_desktop'
-    if '确认预热账号' in message:
-        return 'warm_error_confirm'
-    if '预热正在进行' in message:
-        return 'warm_error_running'
+    if 'Desktop 中登录' in message:
+        return 'usage_expired'
     if '多个或未知' in message:
         return 'error_multiple'
     if '同一个 Claude 账号' in message:
@@ -1257,16 +1128,15 @@ def main() -> int:
     global DATA
     DATA = discover_profiles()
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['status', 'background', 'switch', 'add', 'warmup-info',
-                                            'warmup-login', 'warmup-bind', 'warmup-save',
-                                            'warmup-run', 'warmup-dismiss', 'usage-refresh', 'usage-background'])
+    parser.add_argument('command', choices=['status', 'background', 'switch', 'add',
+                                            'usage-refresh', 'usage-background', 'warmup-save', 'warmup-run'])
     parser.add_argument('target', nargs='?')
     parser.add_argument('--allow-quit', action='store_true')
     parser.add_argument('--allow-keychain-prompt', action='store_true')
     parser.add_argument('--enabled', choices=['yes', 'no'], default='no')
     parser.add_argument('--hour', type=int, default=9)
     parser.add_argument('--minute', type=int, default=0)
-    parser.add_argument('--reason', choices=['manual', 'catchup'], default='manual')
+    parser.add_argument('--scheduled', action='store_true')
     args = parser.parse_args()
     try:
         if args.command == 'status':
@@ -1276,30 +1146,22 @@ def main() -> int:
                 output = background()
             finally:
                 try:
-                    warmup_tick()
-                finally:
                     schedule_usage_tick()
+                finally:
+                    schedule_warmup_tick()
         elif args.command == 'usage-background':
             usage_tick()
             output = {}
         elif args.command == 'usage-refresh' and args.target:
             output = refresh_usage(args.target, allow_prompt=args.allow_keychain_prompt)
+        elif args.command == 'warmup-save' and args.target:
+            output = warmup_save(args.target, args.enabled == 'yes', args.hour, args.minute)
+        elif args.command == 'warmup-run' and args.target:
+            output = warmup_execute(args.target, scheduled=args.scheduled, allow_prompt=args.allow_keychain_prompt)
         elif args.command == 'add':
             output = add_profile()
         elif args.command == 'switch' and args.target:
             output = switch(args.target, args.allow_quit)
-        elif args.command == 'warmup-info' and args.target:
-            output = warmup_info(args.target)
-        elif args.command == 'warmup-login' and args.target:
-            output = warmup_login_command(args.target)
-        elif args.command == 'warmup-bind' and args.target:
-            output = warmup_bind(args.target)
-        elif args.command == 'warmup-save' and args.target:
-            output = warmup_save(args.target, args.enabled == 'yes', args.hour, args.minute)
-        elif args.command == 'warmup-run' and args.target:
-            output = warmup_execute(args.target, args.reason)
-        elif args.command == 'warmup-dismiss' and args.target:
-            output = warmup_dismiss(args.target)
         else:
             raise Problem('请选择账号 A 或 B。')
         print(json.dumps({'ok': True, **output}, ensure_ascii=False))
@@ -1307,7 +1169,8 @@ def main() -> int:
     except (Problem, OSError, subprocess.SubprocessError) as exc:
         # Do not print subprocess output or contents of account configuration files.
         message = str(exc) if isinstance(exc, Problem) else '本地操作失败，请检查 Claude 状态后重试。'
-        print(json.dumps({'ok': False, 'message': message, 'error_code': error_code(message)}, ensure_ascii=False))
+        code = exc.code if isinstance(exc, WarmupProblem) else error_code(message)
+        print(json.dumps({'ok': False, 'message': message, 'error_code': code}, ensure_ascii=False))
         return 1
 
 

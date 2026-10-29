@@ -25,11 +25,48 @@ struct DesktopUsageTests {
             key(account, organization, "user:profile user:inference"): ["token": "broader-fixture", "expiresAt": (now + 7200) * 1000],
             key(otherAccount, organization, "user:profile"): ["token": "wrong-account", "expiresAt": (now + 7200) * 1000],
             key(account, otherOrg, "user:profile"): ["token": "wrong-org", "expiresAt": (now + 7200) * 1000],
-            key(account, organization, "user:inference"): ["token": "wrong-scope", "expiresAt": (now + 7200) * 1000],
+            key(account, organization, "user:inference"): ["token": "inference-fixture", "expiresAt": (now + 7200) * 1000],
         ]
         precondition(DesktopUsage.matchingToken(entries, account: account, organization: organization, now: now) == "profile-fixture")
         precondition(DesktopUsage.matchingToken(entries, account: account, organization: organization, now: now + 7200) == nil)
         precondition(DesktopUsage.matchingToken(entries, account: otherAccount, organization: otherOrg, now: now) == nil)
+        precondition(DesktopUsage.matchingToken(entries, account: account, organization: organization,
+                                               now: now, requiredScopes: ["user:inference"]) == "inference-fixture")
+        precondition(DesktopUsage.matchingToken(entries, account: account, organization: organization,
+                                               now: now, requiredScopes: ["missing:scope"]) == nil)
+
+        let isolated = FileManager.default.temporaryDirectory.appendingPathComponent("unused-fixture-directory")
+        let environment = DesktopWarmup.environment(token: "fixture-token", directory: isolated, inherited: [
+            "HOME": NSHomeDirectory(), "ANTHROPIC_API_KEY": "never-use-api-credit",
+            "ANTHROPIC_BASE_URL": "https://invalid.example", "CLAUDE_CODE_USE_BEDROCK": "1",
+            "CLAUDE_CONFIG_DIR": "/wrong/account", "CLAUDE_CODE_OAUTH_TOKEN": "wrong-account-token"])
+        precondition(environment["ANTHROPIC_API_KEY"] == nil)
+        precondition(environment["ANTHROPIC_BASE_URL"] == nil)
+        precondition(environment["CLAUDE_CODE_USE_BEDROCK"] == nil)
+        precondition(environment["CLAUDE_CODE_OAUTH_TOKEN"] == "fixture-token")
+        precondition(environment["CLAUDE_CONFIG_DIR"] == isolated.path)
+
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("warmup-fixture-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let fakeCLI = fixture.appendingPathComponent("claude-code/2.1.309/fixture/claude.app/Contents/MacOS/claude")
+        try FileManager.default.createDirectory(at: fakeCLI.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        #!/usr/bin/python3
+        import json, os, sys
+        assert os.environ['CLAUDE_CODE_OAUTH_TOKEN'] == 'fixture-token'
+        assert not os.environ.get('ANTHROPIC_API_KEY')
+        assert not os.environ.get('ANTHROPIC_BASE_URL')
+        assert os.path.realpath(os.getcwd()) == os.path.realpath(os.environ['CLAUDE_CONFIG_DIR'])
+        assert '--safe-mode' in sys.argv and '--no-session-persistence' in sys.argv
+        assert sys.argv[sys.argv.index('--tools') + 1] == ''
+        print(json.dumps({'type':'result', 'subtype':'success', 'is_error':False, 'result':'OK'}))
+        """.write(to: fakeCLI, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeCLI.path)
+        let discoveredCLI = try DesktopWarmup.cli(in: fixture.path)
+        precondition(discoveredCLI == fakeCLI)
+        try DesktopWarmup.execute(cli: fakeCLI, token: "fixture-token")
 
         let response = Data("""
         {"five_hour":{"utilization":0,"resets_at":"2030-01-01T00:00:00Z"},

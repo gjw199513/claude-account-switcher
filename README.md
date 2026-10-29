@@ -10,7 +10,7 @@ A small, unofficial macOS app to switch between Claude Desktop accounts and keep
 
 *Usage percentages in the screenshot are illustrative.*
 
-**Usage validation:** synthetic encrypted data and mocked account responses have been tested. Keychain permission and live usage with real signed-in accounts have not yet been verified.
+**Validation:** usage display and Desktop login reuse were checked locally. Automated tests cover scheduling, duplicate prevention, and isolated execution. Live warm-up message delivery and its effect on quota windows remain unverified.
 
 The Desktop login format was researched with reference to [claude-usage](https://github.com/gipsic/claude-usage) (MIT).
 
@@ -26,7 +26,7 @@ cd claude-account-switcher
 
 Open **Claude Account Switcher** from `~/Applications`. The interface follows the macOS language, with English, Simplified Chinese, Japanese, Korean, Spanish, French, and German available.
 
-Use the language menu in the upper-right corner to choose a language or follow the system. To read plan usage, select an account and choose **Refresh**. The first read explains the access and macOS may ask for permission to use Claude Safe Storage in Keychain. It uses that account’s existing Claude Desktop login; no separate login or model request is needed. The app decrypts the Desktop access token briefly in memory and sends it only to `api.anthropic.com` over HTTPS; it does not save, log, or refresh credentials. After a successful first read, accounts are checked about every 15 minutes while macOS is logged in; manual refreshes have a five-minute cooldown. Bars show the last read five-hour and weekly percentages, not token counts. Readings older than 30 minutes or past their reported reset are hidden. An inactive account’s token may expire until the account is opened in Claude again. The Desktop credential format and usage endpoint are undocumented and can change or be rate-limited.
+Use the language menu in the upper-right corner to choose a language or follow the system. To read plan usage, select an account and choose **Refresh**. The first read explains the access and macOS may ask for permission to use Claude Safe Storage in Keychain. It uses that account’s existing Claude Desktop login; no separate login or model request is needed. The app decrypts the Desktop access token briefly in memory and sends it only to `api.anthropic.com` over HTTPS; it does not save, log, or refresh credentials. After a successful first read, usage is checked when the app is opened or an account is selected, and every five minutes while macOS is logged in; reads within the cooldown reuse the latest result. Each window shows its exact reset date and time in your local time zone when the service provides it. Bars show the last read five-hour and weekly percentages, not token counts. Readings older than 30 minutes or past their reported reset are hidden. An inactive account’s token may expire until the account is opened in Claude again. The Desktop credential format and usage endpoint are undocumented and can change or be rate-limited.
 
 ## Use
 
@@ -44,13 +44,8 @@ Additional accounts can be added the same way. Login expiration may still requir
 - SSH, WSL, custom worktrees and other special or unrecognized sessions may be skipped. Existing local scratch workspaces keep their original paths; deleting a profile directory can break sessions that use it. Multiple organization folders stop automatic sync instead of guessing.
 - Conflicting or malformed records are preserved; overwritten index records are backed up locally. Deletions are not propagated. This relies on Claude Desktop's undocumented storage layout and may break after updates.
 
-**Validation:** the current macOS installation displayed Account A's local Code sidebar in Account B. Synthetic tests cover multi-account reconciliation and safety checks. Continuing a real conversation across accounts and other Claude versions has not yet been fully validated.
+**Validation:** local Code sidebar reconciliation was checked on macOS. Synthetic tests cover multi-account reconciliation and safety checks. Continuing a real conversation across accounts and other Claude versions has not yet been fully validated.
 
-## Optional local warm-up
-
-Install [Claude Code CLI](https://code.claude.com/docs/en/setup) (version 2.1.268 or newer). Select an account, open **Warm-up → Settings**, and use **Sign in** to complete the official CLI login for that account. Choose **Refresh**, confirm the displayed email belongs to the selected desktop account, then enable the schedule and choose a time. Each account has its own isolated CLI configuration; this app does not read or copy CLI credentials.
-
-The macOS background agent sends one short Haiku request at the chosen time while you are logged in, even if the window is closed. If the Mac was asleep or off at that time, opening the app later the same day prompts before sending. Failed requests are not automatically retried that day. Requests consume quota and can incur usage-credit charges; they do not guarantee a new five-hour window.
 
 ## Uninstall
 
@@ -59,3 +54,11 @@ Run `./uninstall.sh`. Claude profiles, conversations, and local backups remain o
 ## License
 
 [MIT](LICENSE). This project is independent and is not affiliated with or endorsed by Anthropic.
+
+## Desktop-login warm-up
+
+Use **Warm-up → Settings** to choose a daily local time, or **Warm up now** for a single request. Scheduling is off by default and is configured separately for each account. The Mac must be awake; missed runs are skipped rather than sent late.
+
+Warm-up uses the official runtime already downloaded by Claude Desktop and the selected account's existing, unexpired Desktop login. It never runs a CLI login or saves credentials: an account-and-organization-matched inference token is passed only in the short-lived official process environment. Its configuration and output use a private temporary directory that is removed afterward. No user tools, hooks, plugins, or project files are loaded. Only the sanitized outcome is stored.
+
+Each run sends a short Haiku message and consumes some quota. Known exhausted windows are skipped; failed scheduled runs are not retried that day. Sending a message does not guarantee a new five-hour window or change an existing reset time. If the Desktop login expires, open that account in Claude to renew it.
